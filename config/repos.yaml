@@ -1,0 +1,47 @@
+# =============================================================================
+# repos.yaml — Service registry
+# =============================================================================
+#
+# SINGLE REPO (IS_MONOREPO=false in .env):
+#   The entire repo is one service. No `services` array needed.
+#   api_paths narrows where Claude looks for routes.
+#
+# MONOREPO (IS_MONOREPO=true in .env):
+#   Define a `services` array. Each service has a `path` relative to repo root.
+#   Claude will discover and analyze each service independently.
+#
+# =============================================================================
+
+# ── Single repo example ───────────────────────────────────────────────────────
+ repo:
+  name: sop-order-creation
+  api_paths:
+    - src/main/kotlin
+
+# ── Monorepo example (uncomment and set IS_MONOREPO=true to use) ──────────────
+# repo:
+# services:                                                                                           
+#    - name: auth-service                                                                   
+#      path: services/auth-service-v2                                                           
+#      api_paths:                          
+#        - app/routes                                                                   
+#
+#    - name: nmt-service                                                                               
+#      path: services/nmt-service                            
+#      api_paths:                                                                                      
+#        - app/routes   
+#
+#    - name: inventory-service
+#      path: services/inventory-service
+#      api_paths:
+#        - src/main/java
+#
+#    - name: pricing-service
+#      path: services/pricing-service
+#      api_paths:
+#        - app/
+#
+#    - name: notification-service
+#      path: services/notification-service
+#      api_paths:
+#        - internal/handlers
