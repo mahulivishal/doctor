@@ -1,0 +1,14 @@
+# =============================================================================
+# target-endpoints.yaml — Endpoint whitelist
+# =============================================================================
+# Leave target_endpoints empty ([]) to document ALL discovered endpoints.
+#
+# For monorepos, add `service_name` to match the name in repos.yaml services.
+# For single repos, `service_name` is optional (defaults to SERVICE in .env).
+# =============================================================================
+
+target_endpoints:
+  - path: "/orders"
+    method: POST
+    acl_priority: HIGH
+    label: "Create Order"

@@ -1,0 +1,50 @@
+# .claudeignore — drop this into the repo root before running Claude
+# Claude Code respects this like .gitignore — these paths become invisible
+
+# Dependencies
+node_modules/
+vendor/
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+.eggs/
+*.egg-info/
+
+# Build artefacts
+dist/
+build/
+*.min.js
+*.min.css
+*.map
+
+# Test files  (we don't need tests to document the API surface)
+tests/
+test/
+__tests__/
+*.test.ts
+*.test.js
+*.spec.ts
+*.spec.js
+*_test.py
+test_*.py
+
+# Lock files & generated files
+*.lock
+package-lock.json
+yarn.lock
+poetry.lock
+Pipfile.lock
+
+# Logs & local config
+*.log
+.env
+.env.*
+.DS_Store
+
+# Coverage & CI artefacts
+coverage/
+.nyc_output/
+.github/
+.circleci/
