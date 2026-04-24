@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-pipeline.py — Master orchestrator for doctor.
+pipeline.py — Master orchestrator for api-doc-forge.
 Replaces all individual bash scripts. Called by run.sh.
 
 Usage:
@@ -26,11 +26,12 @@ import config as cfg_module
 import discover
 import analyze
 import render
+import artifacts
 import assemble
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="doctor pipeline")
+    parser = argparse.ArgumentParser(description="api-doc-forge pipeline")
     parser.add_argument("--from",    dest="from_phase", type=int, default=1,
                         help="Start from phase N (skips reset)")
     parser.add_argument("--only",    dest="only_phase", type=int, default=0,
@@ -49,6 +50,8 @@ def reset(cfg):
         os.path.join(cfg.manifests_dir, "*"),
         os.path.join(cfg.analysis_dir, "*"),
         os.path.join(cfg.docs_dir, "*"),
+        os.path.join(cfg.output_dir, "postman", "*"),
+        os.path.join(cfg.output_dir, "diagrams", "*"),
     ]
     files_to_remove = [
         os.path.join(cfg.output_dir, "README.md"),
@@ -121,9 +124,16 @@ def phase4_render(cfg, target_api=""):
         print(f"❌ {result['errors']} error(s)")
 
 
-def phase5_assemble(cfg):
+def phase5_artifacts(cfg):
     print("━" * 50)
-    print(f" Phase 4: Assembly")
+    print(f" Phase 4: Generating artifacts (Postman, Mermaid, ER)")
+    print("━" * 50)
+    artifacts.run(cfg)
+
+
+def phase6_assemble(cfg):
+    print("━" * 50)
+    print(f" Phase 5: Assembly")
     print("━" * 50)
     assemble.run(cfg)
 
@@ -152,7 +162,7 @@ def main():
 
     print()
     print("╔══════════════════════════════════════════════╗")
-    print(f"║  doctor  ·  {cfg.service:<24}               ║")
+    print(f"║  api-doc-forge  ·  {cfg.service:<24} ║")
     print("╚══════════════════════════════════════════════╝")
     print()
 
@@ -201,7 +211,11 @@ def main():
         print()
 
     if should_run(5):
-        phase5_assemble(cfg)
+        phase5_artifacts(cfg)
+        print()
+
+    if should_run(6):
+        phase6_assemble(cfg)
 
     # ── Summary ───────────────────────────────────────────────────────────
     elapsed = time.time() - start
@@ -211,7 +225,15 @@ def main():
     ])
 
     print(f"\n⏱  Total time: {mins}m {secs}s")
-    print(f"   output/docs/ → {doc_count} API docs")
+    print(f"   output/docs/    → {doc_count} API docs")
+    postman_dir = os.path.join(cfg.output_dir, "postman")
+    if os.path.exists(postman_dir):
+        pc = len([f for f in os.listdir(postman_dir) if f.endswith(".json")])
+        print(f"   output/postman/ → {pc} collection(s)")
+    diagrams_dir = os.path.join(cfg.output_dir, "diagrams")
+    if os.path.exists(diagrams_dir):
+        dc = len([f for f in os.listdir(diagrams_dir) if f.endswith(".md")])
+        print(f"   output/diagrams/→ {dc} diagram(s)")
     print()
 
 
