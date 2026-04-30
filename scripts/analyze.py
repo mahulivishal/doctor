@@ -18,7 +18,7 @@ REQUIRED_KEYS = [
 ]
 
 ANALYSIS_PROMPT_TEMPLATE = """\
-You are a senior API documentation engineer producing documentation for an ACL migration layer.
+You are a senior API documentation engineer.
 Analyze ONE endpoint in the '{svc_name}' service with extreme thoroughness.
 
 TARGET ENDPOINT
@@ -57,8 +57,9 @@ CRITICAL RULES
   NEVER leave body.fields empty or null for POST/PUT/PATCH endpoints.
 - For data_model: document the REQUEST/RESPONSE domain objects (DTOs, data classes),
   NOT Redis caches or infrastructure. Infrastructure goes in implementation_detail.
-- For functional_mapping: only populate if there is a real legacy→modern field mapping.
-  If the API is greenfield with no legacy mapping, set request_fields and response_fields to [].
+- For functional_mapping: only populate if there is a REAL field transformation happening
+  (type cast, enum remap, rename, computed value). If fields pass through unchanged,
+  set request_fields and response_fields to [].
 - ALL 9 top-level keys are required.
 
 {{
@@ -70,8 +71,8 @@ CRITICAL RULES
   "overview": {{
     "summary": "one precise sentence describing what this endpoint does",
     "purpose": "2-3 sentences: business context, who calls this, what happens as a result",
-    "oms_context": "how this fits into OMS order management — be specific",
-    "acl_notes": "specific ACL wrapping concerns: enum values to preserve, header handling, idempotency keys, response shape"
+    "context": "how this endpoint fits into the broader system — be specific about its role",
+    "integration_notes": "anything a consumer or integrator must know: idempotency, headers, response shape quirks"
   }},
 
   "request": {{
@@ -153,22 +154,19 @@ CRITICAL RULES
             "enum_values": []
           }}
         ],
-        "relationships": ["references OrderLine", "extends BaseOrder"]
+        "relationships": ["references OrderLine", "extends BaseEntity"]
       }}
     ]
   }},
 
   "functional_mapping": {{
-    "description": "Legacy OMS → Modern OMS field mapping. Set arrays to [] if no legacy mapping exists.",
+    "description": "Field transformations applied by this endpoint. Empty if fields pass through unchanged.",
     "request_fields": [
       {{
         "field": "",
         "source": "request body|path param|query param|header",
         "destination": "where this field goes — DB column, event field, downstream service",
-        "transformation": "any transform: enum remap, type cast, hash, UUID generation",
-        "legacy_equivalent": null,
-        "modern_equivalent": null,
-        "acl_transform_needed": false,
+        "transformation": "the actual transform: enum remap, type cast, hash, UUID generation, rename",
         "notes": ""
       }}
     ],
@@ -176,10 +174,7 @@ CRITICAL RULES
       {{
         "field": "",
         "source": "computed|DB|event|upstream service",
-        "transformation": "",
-        "legacy_equivalent": null,
-        "modern_equivalent": null,
-        "acl_transform_needed": false,
+        "transformation": "how the raw value becomes the response value",
         "notes": ""
       }}
     ]
@@ -207,8 +202,7 @@ CRITICAL RULES
       "storage_locations_affected": [],
       "rollback_possible": false,
       "side_effects": ["list every side effect: events published, caches written, emails sent"]
-    }},
-    "acl_risk": "specific risks the ACL layer introduces for this endpoint"
+    }}
   }},
 
   "implementation_detail": {{

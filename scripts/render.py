@@ -73,15 +73,15 @@ def render(data: dict) -> str:
         a(f"> **Blast Radius:** {_badge(br['severity'])}")
         if br.get("severity_rationale"):
             a(f"> _{br['severity_rationale']}_")
-    if ov.get("acl_notes"):
-        a(f"\n> ⚠️ **ACL Note:** {ov['acl_notes']}")
+    if ov.get("integration_notes"):
+        a(f"\n> ℹ️ **Integration Notes:** {ov['integration_notes']}")
     a("")
 
     # ── Overview ─────────────────────────────────────────────────────────
     a("## Overview")
-    if ov.get("summary"):     a(f"**Summary:** {ov['summary']}\n")
-    if ov.get("purpose"):     a(f"**Purpose:** {ov['purpose']}\n")
-    if ov.get("oms_context"): a(f"**OMS Context:** {ov['oms_context']}\n")
+    if ov.get("summary"):  a(f"**Summary:** {ov['summary']}\n")
+    if ov.get("purpose"):  a(f"**Purpose:** {ov['purpose']}\n")
+    if ov.get("context"):  a(f"**Context:** {ov['context']}\n")
 
     # ── Request ──────────────────────────────────────────────────────────
     a("## Request")
@@ -216,37 +216,34 @@ def render(data: dict) -> str:
         a("_No entity data captured._\n")
 
     # ── Functional Mapping ───────────────────────────────────────────────
-    a("## Functional Mapping  _(Legacy OMS → Modern OMS)_")
-    a(f"_{fm.get('description') or 'Field-by-field trace.'}_\n")
-
-    req_fields = _safe_list(fm.get("request_fields"))
-    if req_fields:
-        a("### Request Fields")
-        rows = [[f.get("field",""), f.get("source",""), f.get("destination",""),
-                 f.get("transformation","—"), f.get("legacy_equivalent","—"),
-                 f.get("modern_equivalent","—"),
-                 "✓" if f.get("acl_transform_needed") else ""]
-                for f in req_fields]
-        if rows:
-            a(_table(["Field","Source","Destination","Transform",
-                      "Legacy Equiv.","Modern Equiv.","ACL Transform?"], rows))
-
+    req_fields  = _safe_list(fm.get("request_fields"))
     resp_fields = _safe_list(fm.get("response_fields"))
-    if resp_fields:
-        a("### Response Fields")
-        rows = [[f.get("field",""), f.get("source",""), f.get("transformation","—"),
-                 f.get("legacy_equivalent","—"), f.get("modern_equivalent","—"),
-                 "✓" if f.get("acl_transform_needed") else ""]
-                for f in resp_fields]
-        if rows:
-            a(_table(["Field","Source","Transform",
-                      "Legacy Equiv.","Modern Equiv.","ACL Transform?"], rows))
+
+    if req_fields or resp_fields:
+        a("## Field Transformations")
+        desc = fm.get("description") or "Field transformations applied by this endpoint."
+        a(f"_{desc}_\n")
+
+        if req_fields:
+            a("### Request")
+            rows = [[f.get("field",""), f.get("source",""), f.get("destination",""),
+                     f.get("transformation","—"), f.get("notes","")]
+                    for f in req_fields]
+            if rows:
+                a(_table(["Field","Source","Destination","Transformation","Notes"], rows))
+
+        if resp_fields:
+            a("### Response")
+            rows = [[f.get("field",""), f.get("source",""),
+                     f.get("transformation","—"), f.get("notes","")]
+                    for f in resp_fields]
+            if rows:
+                a(_table(["Field","Source","Transformation","Notes"], rows))
 
     # ── Blast Radius ─────────────────────────────────────────────────────
     a("## Blast Radius")
     a(f"**Severity:** {_badge(br.get('severity',''))}")
     if br.get("severity_rationale"): a(f"\n_{br['severity_rationale']}_\n")
-    if br.get("acl_risk"):           a(f"\n> ⚠️ **ACL Risk:** {br['acl_risk']}\n")
 
     dc = _safe_list(br.get("downstream_consumers"))
     if dc:

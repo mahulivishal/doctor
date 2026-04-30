@@ -415,9 +415,6 @@ def run(cfg: Config) -> None:
     print("\n📊 Mermaid Diagrams")
     generate_diagrams(cfg, apis)
 
-    print("\n🔗 Embedding diagrams in API docs")
-    embed_diagrams_in_docs(cfg, apis)
-
     print(f"""
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ✅ Artifacts complete!
