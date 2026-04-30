@@ -10,57 +10,78 @@ For every targeted HTTP endpoint, the framework outputs:
 
 | Section | What it contains |
 |---|---|
-| **Overview** | Summary, business purpose, OMS context, ACL notes |
-| **Request** | Headers, path params, query params, body schema + examples |
-| **Response** | Success + error responses with schemas and examples |
-| **Data Model** | Every entity touched, its fields, types, constraints, storage location |
-| **Functional Mapping** | Every field traced from source → destination, with legacy/modern OMS equivalents |
-| **Blast Radius** | Severity (HIGH/MEDIUM/LOW), downstream consumers, upstream deps, side effects |
-| **Implementation Detail** | Handler, middleware chain, auth, caching, external calls, notable logic, ambiguities |
+| **Overview** | Precise summary, business purpose, OMS context, ACL wrapping concerns |
+| **Request** | Every header, path param, query param, and body field — fully expanded with types, validation constraints, enum values, and nested objects |
+| **Response** | Success response fields with examples, all error codes with exact trigger conditions |
+| **Data Model** | Domain entities (request/response DTOs, not infrastructure) — fields, types, nullability, enum values, and relationships |
+| **Functional Mapping** | Field-by-field trace from source to destination, with legacy/modern OMS equivalents and ACL transform flags |
+| **Blast Radius** | Severity (HIGH/MEDIUM/LOW), downstream consumers, upstream dependencies, data mutation and side effects |
+| **Implementation Detail** | Handler, middleware chain, auth mechanism, caching strategy, all external calls, validation logic, notable logic, ambiguities |
+
+In addition to per-endpoint markdown docs, Doctor generates:
+
+| Artifact | What it is |
+|---|---|
+| `output/postman/<service>.postman_collection.json` | Ready-to-import Postman collection with pre-filled request bodies, example responses, and `{{base_url}}` variable |
+| `output/diagrams/<api_id>_datamodel.md` | Mermaid `classDiagram` per endpoint — domain entities with typed fields, enum values, and UML relationships |
+| `output/diagrams/<service>_er_diagram.md` | Mermaid `erDiagram` combining all entities across the service into a single relationship view |
+| `output/README.md` | Master index table of all APIs with blast radius summary and functional mapping cross-reference |
+| `output/ACL-CHECKLIST.md` | Implementation priority ordered by blast radius, unique transform catalogue, ambiguities requiring manual review |
+| `output/api-registry.json` | Machine-readable registry for tooling integration |
+
+> **Visualising diagrams:** Open `.md` files in VS Code with the [Mermaid Preview](https://marketplace.visualstudio.com/items?itemName=bierner.markdown-mermaid) extension (`Cmd+Shift+V`), push to GitHub (renders natively), or paste into [mermaid.live](https://mermaid.live).
 
 ---
-
 ## Project structure
 
 ```
-api-doc-forge/
+doctor/
 │
 ├── run.sh                          # Entry point — delegates to pipeline.py
 ├── setup.sh                        # One-time workbench setup
 ├── validate.sh                     # Pre-flight checks
+├── SKILL.md                        # Claude Code skill — enables autonomous usage
 ├── CLAUDE.md                       # Agent instructions (auto-loaded by Claude Code)
 │
 ├── .env                            # Your config (never commit this)
 ├── .env.template                   # Template to copy from
 ├── .gitignore                      # Ignores .env, workspace/, output/
 │
+├── .github/
+│   └── copilot-instructions.md     # GitHub Copilot skill for Doctor contributors
+│
 ├── config/
-│   ├── repos.yaml                  # Repo + service path definitions
-│   ├── target-endpoints.yaml       # Endpoint whitelist
+│   ├── repos.yaml                  # Repo + service path definitions (monorepo support)
+│   ├── target-endpoints.yaml       # Endpoint whitelist (empty = document all)
 │   └── .claudeignore               # Files Claude should never read
 │
 ├── scripts/
-│   ├── pipeline.py                 # Master orchestrator (replaces all bash scripts)
-│   ├── config.py                   # Central config loader
-│   ├── discover.py                 # Phase 1b: Claude discovers endpoints
-│   ├── analyze.py                  # Phase 2: Claude analyzes each endpoint (parallel)
-│   ├── render.py                   # Phase 3: JSON → Markdown (parallel, no Claude)
-│   ├── assemble.py                 # Phase 4: Master index, ACL checklist, registry
-│   └── 1-clone-repo.sh             # Phase 1a: Git clone (bash — git stays in bash)
+│   ├── pipeline.py                 # Master orchestrator — 6 phases
+│   ├── config.py                   # Central config loader (reads .env + yaml files)
+│   ├── discover.py                 # Phase 2: Claude discovers endpoints per service
+│   ├── analyze.py                  # Phase 3: Claude deep-analyzes each endpoint (parallel)
+│   ├── render.py                   # Phase 4: JSON → Markdown (parallel, no Claude)
+│   ├── artifacts.py                # Phase 5: Postman + Mermaid diagrams (no Claude)
+│   ├── assemble.py                 # Phase 6: Master index, ACL checklist, registry
+│   └── 1-clone-repo.sh             # Phase 1: Git clone (bash — git stays in bash)
 │
-├── workspace/                      # Intermediate files (safe to delete)
-│   ├── repos/<service>/            # Cloned repo
-│   ├── manifests/                  # Discovered endpoint manifests
+├── workspace/                      # Intermediate files (safe to delete and regenerate)
+│   ├── repos/<service>/            # Cloned or extracted repo
+│   ├── manifests/                  # Discovered endpoint manifests per service
 │   └── analysis/                   # Raw Claude analysis JSON per endpoint
 │
 └── output/                         # Final deliverables
-    ├── README.md                   # Master index of all APIs
+    ├── README.md                   # Master index with blast radius table
     ├── ACL-CHECKLIST.md            # Implementation priority + transform catalogue
     ├── api-registry.json           # Machine-readable registry
-    └── docs/
-        └── *.md                    # One doc per endpoint
+    ├── docs/
+    │   └── <api_id>.md             # One doc per endpoint (with embedded Mermaid diagram)
+    ├── postman/
+    │   └── <service>.postman_collection.json
+    └── diagrams/
+        ├── <api_id>_datamodel.md   # Mermaid class diagram per endpoint
+        └── <service>_er_diagram.md # Mermaid ER diagram per service
 ```
-
 ---
 
 ## Quickstart
@@ -278,3 +299,45 @@ output/
 | Analysis JSON missing `method` | Cached file is invalid — delete it and re-run: `bash run.sh --api <id>` |
 
 ---
+
+## Using Doctor
+
+### Prerequisites
+- [Claude Code](https://docs.anthropic.com/en/docs/claude-code) installed (`npm install -g @anthropic-ai/claude-code`)
+- Claude Code authenticated (`claude auth login`)
+- Git access to the repository you want to document
+
+---
+
+### Using with Claude Code
+
+Once installed, you can ask Claude Code to run Doctor on your behalf without touching any commands.
+
+Open Claude Code inside the `doctor/` directory:
+
+```bash
+cd doctor
+claude
+```
+
+Then simply tell Claude what you want:
+
+> _"Document the APIs in https://github.com/my-org/my-service.git"_
+
+> _"Generate a Postman collection for the order service"_
+
+> _"Document only the POST endpoints in this monorepo"_
+
+Claude reads `SKILL.md` and handles the entire workflow — cloning the repo, configuring `.env`, running the pipeline, and reporting what was generated.
+
+---
+
+### Resuming a partial run
+
+```bash
+bash run.sh --from 3    # resume from analysis (skip clone + discovery)
+bash run.sh --from 4    # re-render docs only
+bash run.sh --from 5    # regenerate Postman + diagrams only
+bash run.sh --only 2    # discovery only — see all endpoints before spending tokens
+bash run.sh --api <id>  # re-run a single endpoint
+```
