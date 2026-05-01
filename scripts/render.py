@@ -182,39 +182,6 @@ def render(data: dict) -> str:
                 for e in errors]
         a(_table(["Status","Error Code","Description","Trigger Condition"], rows))
 
-    # ── Data Model ───────────────────────────────────────────────────────
-    a("## Data Model")
-    if dm.get("description"):
-        a(f"_{dm['description']}_\n")
-    entities = _safe_list(dm.get("entities"))
-    if entities:
-        for ent in entities:
-            ent_type = f" _{ent.get('type','')}_" if ent.get("type") else ""
-            a(f"### `{ent.get('name','')}`{ent_type}")
-            if ent.get("description"):
-                a(f"{ent['description']}\n")
-            if ent.get("storage"):
-                a(f"**Storage:** `{ent.get('storage','')}` — `{ent.get('location','')}`\n")
-            fields = _safe_list(ent.get("fields"))
-            if fields:
-                rows = []
-                for f in fields:
-                    enum_vals = _safe_str_list(f.get("enum_values"))
-                    enum_str  = ", ".join(f"`{v}`" for v in enum_vals) if enum_vals else ""
-                    constraints = f.get("constraints","")
-                    combined = " | ".join(filter(None, [constraints, enum_str]))
-                    rows.append([
-                        f.get("field",""), f.get("type",""),
-                        "✓" if not f.get("nullable", True) else "",
-                        f.get("description",""), combined
-                    ])
-                a(_table(["Field","Type","Not Null","Description","Constraints / Enum Values"], rows))
-            rels = _safe_str_list(ent.get("relationships"))
-            if rels:
-                a("**Relationships:** " + ", ".join(f"`{r}`" for r in rels) + "\n")
-    else:
-        a("_No entity data captured._\n")
-
     # ── Functional Mapping ───────────────────────────────────────────────
     req_fields  = _safe_list(fm.get("request_fields"))
     resp_fields = _safe_list(fm.get("response_fields"))
