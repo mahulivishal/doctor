@@ -3,35 +3,50 @@
 > A Python-orchestrated Claude Code framework that auto-generates exhaustive API documentation for ACL layer implementation during OMS migration. Supports single repos, monorepos, and services written in Java, Kotlin, Python, and Go.
 
 ---
-
 ## What it produces
 
 For every targeted HTTP endpoint, the framework outputs:
 
 | Section | What it contains |
 |---|---|
-| **Overview** | Precise summary, business purpose, OMS context, ACL wrapping concerns |
+| **Overview** | Precise summary, business purpose, system context, integration notes |
 | **Request** | Every header, path param, query param, and body field — fully expanded with types, validation constraints, enum values, and nested objects |
 | **Response** | Success response fields with examples, all error codes with exact trigger conditions |
-| **Data Model** | Domain entities (request/response DTOs, not infrastructure) — fields, types, nullability, enum values, and relationships |
-| **Functional Mapping** | Field-by-field trace from source to destination, with legacy/modern OMS equivalents and ACL transform flags |
+| **Field Transformations** | Only populated when real transformations exist (type casts, enum remaps, renames) — omitted for pass-through fields |
 | **Blast Radius** | Severity (HIGH/MEDIUM/LOW), downstream consumers, upstream dependencies, data mutation and side effects |
 | **Implementation Detail** | Handler, middleware chain, auth mechanism, caching strategy, all external calls, validation logic, notable logic, ambiguities |
 
-In addition to per-endpoint markdown docs, Doctor generates:
+These are compiled into the following output folders:
 
-| Artifact | What it is |
+```
+output/
+├── documents/            ← One markdown doc per API endpoint
+├── data_model/           ← One Mermaid class diagram per API endpoint
+├── db_entity_relations/  ← One Mermaid ER diagram per service (full DB schema view)
+├── postman_collection/   ← One Postman collection per service
+└── api_document/         ← One OpenAPI 3.0 YAML per service
+```
+
+| Artifact | Description |
 |---|---|
-| `output/postman/<service>.postman_collection.json` | Ready-to-import Postman collection with pre-filled request bodies, example responses, and `{{base_url}}` variable |
-| `output/diagrams/<api_id>_datamodel.md` | Mermaid `classDiagram` per endpoint — domain entities with typed fields, enum values, and UML relationships |
-| `output/diagrams/<service>_er_diagram.md` | Mermaid `erDiagram` combining all entities across the service into a single relationship view |
-| `output/README.md` | Master index table of all APIs with blast radius summary and functional mapping cross-reference |
-| `output/ACL-CHECKLIST.md` | Implementation priority ordered by blast radius, unique transform catalogue, ambiguities requiring manual review |
-| `output/api-registry.json` | Machine-readable registry for tooling integration |
+| `documents/<api_id>.md` | Full holistic documentation for one endpoint |
+| `data_model/<api_id>_datamodel.md` | Mermaid `classDiagram` — domain entities, typed fields, enum values, relationships |
+| `db_entity_relations/<service>_er_diagram.md` | Mermaid `erDiagram` — combined DB schema across all documented APIs for the service |
+| `postman_collection/<service>.postman_collection.json` | Ready-to-import Postman collection with pre-filled bodies, example responses, and `{{base_url}}` variable |
+| `api_document/<service>_openapi.yaml` | OpenAPI 3.0.3 spec — paste into Swagger UI, Redoc, Stoplight, or any developer portal |
 
-> **Visualising diagrams:** Open `.md` files in VS Code with the [Mermaid Preview](https://marketplace.visualstudio.com/items?itemName=bierner.markdown-mermaid) extension (`Cmd+Shift+V`), push to GitHub (renders natively), or paste into [mermaid.live](https://mermaid.live).
+Plus two summary files at `output/` root:
+
+| File | Description |
+|---|---|
+| `README.md` | Master index table of all APIs with blast radius summary |
+| `CHECKLIST.md` | Implementation priority guide and field transformation catalogue |
+| `api-registry.json` | Machine-readable registry for tooling integration |
+
+> **Visualising Mermaid diagrams:** Open `.md` files in VS Code with the [Mermaid Preview](https://marketplace.visualstudio.com/items?itemName=bierner.markdown-mermaid) extension (`Cmd+Shift+V`), push to GitHub (renders natively since 2022), or paste into [mermaid.live](https://mermaid.live).
 
 ---
+
 ## Project structure
 
 ```
@@ -60,9 +75,9 @@ doctor/
 │   ├── config.py                   # Central config loader (reads .env + yaml files)
 │   ├── discover.py                 # Phase 2: Claude discovers endpoints per service
 │   ├── analyze.py                  # Phase 3: Claude deep-analyzes each endpoint (parallel)
-│   ├── render.py                   # Phase 4: JSON → Markdown (parallel, no Claude)
-│   ├── artifacts.py                # Phase 5: Postman + Mermaid diagrams (no Claude)
-│   ├── assemble.py                 # Phase 6: Master index, ACL checklist, registry
+│   ├── render.py                   # Phase 4: JSON → Markdown docs (parallel, no Claude)
+│   ├── artifacts.py                # Phase 5: Postman + Mermaid + ER + OpenAPI (no Claude)
+│   ├── assemble.py                 # Phase 6: Master index, checklist, registry
 │   └── 1-clone-repo.sh             # Phase 1: Git clone (bash — git stays in bash)
 │
 ├── workspace/                      # Intermediate files (safe to delete and regenerate)
@@ -72,15 +87,18 @@ doctor/
 │
 └── output/                         # Final deliverables
     ├── README.md                   # Master index with blast radius table
-    ├── ACL-CHECKLIST.md            # Implementation priority + transform catalogue
+    ├── CHECKLIST.md                # Priority guide + field transformation catalogue
     ├── api-registry.json           # Machine-readable registry
-    ├── docs/
-    │   └── <api_id>.md             # One doc per endpoint (with embedded Mermaid diagram)
-    ├── postman/
+    ├── documents/
+    │   └── <api_id>.md             # One holistic doc per endpoint
+    ├── data_model/
+    │   └── <api_id>_datamodel.md   # Mermaid class diagram per endpoint
+    ├── db_entity_relations/
+    │   └── <service>_er_diagram.md # Mermaid ER diagram per service
+    ├── postman_collection/
     │   └── <service>.postman_collection.json
-    └── diagrams/
-        ├── <api_id>_datamodel.md   # Mermaid class diagram per endpoint
-        └── <service>_er_diagram.md # Mermaid ER diagram per service
+    └── api_document/
+        └── <service>_openapi.yaml  # OpenAPI 3.0 spec per service
 ```
 ---
 

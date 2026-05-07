@@ -4,7 +4,6 @@ and target-endpoints.yaml. Single source of truth for the entire pipeline.
 """
 import os
 import re
-import json
 from pathlib import Path
 from dataclasses import dataclass, field
 from typing import List, Optional
@@ -13,7 +12,7 @@ from typing import List, Optional
 @dataclass
 class ServiceConfig:
     name: str
-    path: str          # absolute or relative path to the service root
+    path: str
     api_paths: List[str] = field(default_factory=lambda: ["."])
 
 
@@ -32,7 +31,7 @@ class Config:
     service: str
     repo: str
     branch: str
-    repo_root: str      # workspace/repos/<service>
+    repo_root: str
 
     # Monorepo
     is_monorepo: bool
@@ -46,26 +45,30 @@ class Config:
     # Endpoints
     target_endpoints: List[TargetEndpoint]
 
-    # Paths
+    # Paths — workspace
     project_root: str
     analysis_dir: str
     manifests_dir: str
+
+    # Paths — output (one sub-folder per artifact type)
     output_dir: str
-    docs_dir: str
+    docs_dir: str           # output/documents/
+    data_model_dir: str     # output/data_model/
+    db_er_dir: str          # output/db_entity_relations/
+    postman_dir: str        # output/postman_collection/
+    api_doc_dir: str        # output/api_document/  (swagger yaml)
 
 
 def _find_claude() -> str:
-    """Find claude binary — checks PATH and common install locations."""
     import shutil
     found = shutil.which("claude")
     if found:
         return found
-    candidates = [
+    for c in [
         os.path.expanduser("~/.local/bin/claude"),
         "/usr/local/bin/claude",
         "/opt/homebrew/bin/claude",
-    ]
-    for c in candidates:
+    ]:
         if os.path.isfile(c) and os.access(c, os.X_OK):
             return c
     raise RuntimeError(
@@ -73,8 +76,7 @@ def _find_claude() -> str:
     )
 
 
-def _parse_yaml_simple(content: str, key: str) -> List[str]:
-    """Minimal YAML list parser — no external dependency."""
+def _parse_list(content: str, key: str) -> List[str]:
     pattern = rf'{re.escape(key)}:\s*\n((?:\s+-[^\n]+\n?)*)'
     match = re.search(pattern, content)
     if not match:
@@ -84,13 +86,19 @@ def _parse_yaml_simple(content: str, key: str) -> List[str]:
             if line.strip().startswith('-')]
 
 
+def _strip_comments(content: str) -> str:
+    return '\n'.join(
+        line for line in content.splitlines()
+        if not line.strip().startswith('#')
+    )
+
+
 def load(project_root: str = ".") -> Config:
     project_root = str(Path(project_root).resolve())
 
     # ── .env ──────────────────────────────────────────────────────────────
-    env_path = os.path.join(project_root, ".env")
     env = {}
-    with open(env_path) as f:
+    with open(os.path.join(project_root, ".env")) as f:
         for line in f:
             line = line.strip()
             if line and not line.startswith('#') and '=' in line:
@@ -101,7 +109,7 @@ def load(project_root: str = ".") -> Config:
     repo     = env.get("REPO", "")
     branch   = env.get("BRANCH", "main")
     is_mono  = env.get("IS_MONOREPO", "false").lower() == "true"
-    model = env.get("CLAUDE_MODEL", "")
+    model    = env.get("CLAUDE_MODEL", "")
     workers  = int(env.get("PARALLEL_WORKERS", "4"))
 
     if not service:
@@ -117,35 +125,27 @@ def load(project_root: str = ".") -> Config:
 
     if os.path.exists(repos_yaml):
         with open(repos_yaml) as f:
-            content = f.read()
+            raw = f.read()
+        content = _strip_comments(raw)
 
         if is_mono:
-            # Parse monorepo services
-            name_matches  = re.findall(r'- name:\s*(\S+)', content)
-            path_matches  = re.findall(r'  path:\s*(\S+)', content)
-
+            name_matches = re.findall(r'- name:\s*(\S+)', content)
+            path_matches = re.findall(r'  path:\s*(\S+)', content)
             if not name_matches:
                 raise ValueError(
                     "IS_MONOREPO=true but no services defined in config/repos.yaml.\n"
-                    "Add a services block with name and path for each service:\n\n"
+                    "Add a services block:\n\n"
                     "  repo:\n"
                     "    services:\n"
                     "      - name: auth-service\n"
                     "        path: services/auth-service\n"
-                    "      - name: order-service\n"
-                    "        path: services/order-service\n"
                 )
-
             for i, name in enumerate(name_matches):
                 svc_path = os.path.join(repo_root, path_matches[i]) \
                            if i < len(path_matches) else repo_root
-                api_paths = ["."]
-                services.append(ServiceConfig(
-                    name=name, path=svc_path, api_paths=api_paths
-                ))
+                services.append(ServiceConfig(name=name, path=svc_path))
         else:
-            # Single service — read api_paths
-            api_paths = _parse_yaml_simple(content, "api_paths") or ["."]
+            api_paths = _parse_list(content, "api_paths") or ["."]
             services.append(ServiceConfig(
                 name=service, path=repo_root, api_paths=api_paths
             ))
@@ -158,30 +158,37 @@ def load(project_root: str = ".") -> Config:
 
     if os.path.exists(targets_yaml):
         with open(targets_yaml) as f:
-            content = f.read()
+            raw = f.read()
+        content = _strip_comments(raw)
 
-        paths    = re.findall(r'path:\s*"([^"]+)"', content)
-        methods  = re.findall(r'method:\s*(\S+)', content)
-        labels   = re.findall(r'label:\s*"([^"]+)"', content)
-        prios    = re.findall(r'acl_priority:\s*(\S+)', content)
+        paths     = re.findall(r'path:\s*"([^"]+)"', content)
+        methods   = re.findall(r'method:\s*(\S+)',    content)
+        labels    = re.findall(r'label:\s*"([^"]+)"', content)
+        prios     = re.findall(r'acl_priority:\s*(\S+)', content)
         svc_names = re.findall(r'service_name:\s*(\S+)', content)
 
         for i, path in enumerate(paths):
             target_endpoints.append(TargetEndpoint(
                 path=path,
-                method=methods[i]    if i < len(methods)    else "ANY",
-                label=labels[i]      if i < len(labels)     else "",
-                acl_priority=prios[i] if i < len(prios)     else "HIGH",
+                method=methods[i]     if i < len(methods)    else "ANY",
+                label=labels[i]       if i < len(labels)     else "",
+                acl_priority=prios[i] if i < len(prios)      else "HIGH",
                 service_name=svc_names[i] if i < len(svc_names) else None,
             ))
 
-    # ── Directories ───────────────────────────────────────────────────────
+    # ── Output directories ─────────────────────────────────────────────────
+    output_dir    = os.path.join(project_root, "output")
+    docs_dir      = os.path.join(output_dir, "documents")
+    data_model_dir = os.path.join(output_dir, "data_model")
+    db_er_dir     = os.path.join(output_dir, "db_entity_relations")
+    postman_dir   = os.path.join(output_dir, "postman_collection")
+    api_doc_dir   = os.path.join(output_dir, "api_document")
+
     analysis_dir  = os.path.join(project_root, "workspace", "analysis")
     manifests_dir = os.path.join(project_root, "workspace", "manifests")
-    output_dir    = os.path.join(project_root, "output")
-    docs_dir      = os.path.join(project_root, "output", "docs")
 
-    for d in [analysis_dir, manifests_dir, output_dir, docs_dir]:
+    for d in [analysis_dir, manifests_dir, output_dir,
+              docs_dir, data_model_dir, db_er_dir, postman_dir, api_doc_dir]:
         os.makedirs(d, exist_ok=True)
 
     return Config(
@@ -200,4 +207,8 @@ def load(project_root: str = ".") -> Config:
         manifests_dir=manifests_dir,
         output_dir=output_dir,
         docs_dir=docs_dir,
+        data_model_dir=data_model_dir,
+        db_er_dir=db_er_dir,
+        postman_dir=postman_dir,
+        api_doc_dir=api_doc_dir,
     )
