@@ -47,29 +47,29 @@ def reset(cfg):
     """Clear all generated files, keep cloned repo and config."""
     print("🧹 Resetting workspace...")
     dirs_to_clear = [
-        os.path.join(cfg.manifests_dir, "*"),
-        os.path.join(cfg.analysis_dir, "*"),
-        os.path.join(cfg.docs_dir, "*"),
-        os.path.join(cfg.output_dir, "postman", "*"),
-        os.path.join(cfg.output_dir, "diagrams", "*"),
+        os.path.join(cfg.manifests_dir,  "*"),
+        os.path.join(cfg.analysis_dir,   "*"),
+        os.path.join(cfg.docs_dir,       "*"),
+        os.path.join(cfg.data_model_dir, "*"),
+        os.path.join(cfg.db_er_dir,      "*"),
+        os.path.join(cfg.postman_dir,    "*"),
+        os.path.join(cfg.api_doc_dir,    "*"),
     ]
     files_to_remove = [
         os.path.join(cfg.output_dir, "README.md"),
-        os.path.join(cfg.output_dir, "ACL-CHECKLIST.md"),
+        os.path.join(cfg.output_dir, "CHECKLIST.md"),
         os.path.join(cfg.output_dir, "api-registry.json"),
     ]
     for pattern in dirs_to_clear:
         for f in glob.glob(pattern):
-            if os.path.isfile(f):
-                os.remove(f)
-            elif os.path.isdir(f):
-                shutil.rmtree(f)
+            if os.path.isfile(f):   os.remove(f)
+            elif os.path.isdir(f):  shutil.rmtree(f)
     for f in files_to_remove:
         if os.path.exists(f):
             os.remove(f)
 
-    # Recreate dirs
-    for d in [cfg.manifests_dir, cfg.analysis_dir, cfg.docs_dir]:
+    for d in [cfg.manifests_dir, cfg.analysis_dir, cfg.docs_dir,
+              cfg.data_model_dir, cfg.db_er_dir, cfg.postman_dir, cfg.api_doc_dir]:
         os.makedirs(d, exist_ok=True)
 
     print("✅ Workspace clean\n")
@@ -126,7 +126,7 @@ def phase4_render(cfg, target_api=""):
 
 def phase5_artifacts(cfg):
     print("━" * 50)
-    print(f" Phase 4: Generating artifacts (Postman, Mermaid, ER)")
+    print(f" Phase 5: Generating artifacts (Postman, Mermaid, ER, OpenAPI)")
     print("━" * 50)
     artifacts.run(cfg)
 
@@ -220,20 +220,16 @@ def main():
     # ── Summary ───────────────────────────────────────────────────────────
     elapsed = time.time() - start
     mins, secs = divmod(int(elapsed), 60)
-    doc_count = len([
-        f for f in os.listdir(cfg.docs_dir) if f.endswith(".md")
-    ])
+
+    def _count(d, ext):
+        return len([f for f in os.listdir(d) if f.endswith(ext)]) if os.path.exists(d) else 0
 
     print(f"\n⏱  Total time: {mins}m {secs}s")
-    print(f"   output/docs/    → {doc_count} API docs")
-    postman_dir = os.path.join(cfg.output_dir, "postman")
-    if os.path.exists(postman_dir):
-        pc = len([f for f in os.listdir(postman_dir) if f.endswith(".json")])
-        print(f"   output/postman/ → {pc} collection(s)")
-    diagrams_dir = os.path.join(cfg.output_dir, "diagrams")
-    if os.path.exists(diagrams_dir):
-        dc = len([f for f in os.listdir(diagrams_dir) if f.endswith(".md")])
-        print(f"   output/diagrams/→ {dc} diagram(s)")
+    print(f"   output/documents/           → {_count(cfg.docs_dir, '.md')} API docs")
+    print(f"   output/data_model/          → {_count(cfg.data_model_dir, '.md')} class diagrams")
+    print(f"   output/db_entity_relations/ → {_count(cfg.db_er_dir, '.md')} ER diagram(s)")
+    print(f"   output/postman_collection/  → {_count(cfg.postman_dir, '.json')} collection(s)")
+    print(f"   output/api_document/        → {_count(cfg.api_doc_dir, '.yaml')} OpenAPI spec(s)")
     print()
 
 

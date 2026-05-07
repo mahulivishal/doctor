@@ -1,10 +1,19 @@
 """
 artifacts.py — Phase 5: Generate Postman collections, Mermaid data model
-charts, and ER diagrams from existing analysis JSON files.
+charts, per-service ER diagrams, and Swagger/OpenAPI YAML.
 Zero additional Claude calls — pure Python generation.
+
+Output structure:
+  output/
+  ├── documents/            ← API markdown docs (rendered by render.py)
+  ├── data_model/           ← Mermaid classDiagram per API
+  ├── db_entity_relations/  ← Mermaid erDiagram per SERVICE
+  ├── postman_collection/   ← Postman collection per service
+  └── api_document/         ← OpenAPI 3.0 YAML per service
 """
 import json
 import os
+import re
 import uuid
 from collections import defaultdict
 from typing import List, Optional
@@ -32,25 +41,30 @@ def _load_analyses(cfg: Config) -> List[dict]:
                     pass
     return apis
 
+def _slugify(s: str) -> str:
+    return re.sub(r'[^a-zA-Z0-9_-]', '_', s).strip('_')
+
+def _normalize_path_postman(path: str) -> str:
+    """Convert {param} and {param:.+} to :param for Postman."""
+    return re.sub(r'\{([^}:]+)(?::[^}]*)?\}', r':\1', path)
+
 
 # ─── 1. Postman Collection ────────────────────────────────────────────────────
 
 def _postman_body(api: dict) -> Optional[dict]:
-    """Build Postman raw body from analysis body.fields."""
     body = (api.get("request") or {}).get("body") or {}
-    if not isinstance(body, dict):
+    if not isinstance(body, dict) or not body.get("fields"):
         return None
 
     def fields_to_example(fields) -> dict:
         result = {}
         for f in _safe_list(fields):
-            name = f.get("field", "")
-            if not name:
-                continue
+            name    = f.get("field", "")
             ftype   = f.get("type", "string").lower()
             example = f.get("example")
             nested  = f.get("nested_fields") or []
-
+            if not name:
+                continue
             if nested:
                 result[name] = fields_to_example(nested)
             elif example not in (None, "", "string"):
@@ -65,78 +79,69 @@ def _postman_body(api: dict) -> Optional[dict]:
                 result[name] = f"<{name}>"
         return result
 
-    if body.get("fields"):
-        example = fields_to_example(body["fields"])
-        return {
-            "mode": "raw",
-            "raw": json.dumps(example, indent=2),
-            "options": {"raw": {"language": "json"}}
-        }
-    return None
+    example = fields_to_example(body["fields"])
+    return {
+        "mode": "raw",
+        "raw": json.dumps(example, indent=2),
+        "options": {"raw": {"language": "json"}},
+    }
 
 
 def _postman_headers(api: dict) -> list:
     headers = []
     for h in _safe_list((api.get("request") or {}).get("headers")):
         headers.append({
-            "key":   h.get("name", ""),
-            "value": h.get("example", ""),
+            "key":         h.get("name", ""),
+            "value":       h.get("example", ""),
             "description": h.get("description", ""),
         })
-    # Always add Content-Type for bodies
-    method = api.get("method", "")
-    if method in ("POST", "PUT", "PATCH"):
+    if api.get("method", "") in ("POST", "PUT", "PATCH"):
         if not any(h["key"].lower() == "content-type" for h in headers):
             headers.append({
-                "key": "Content-Type",
-                "value": "application/json",
+                "key":         "Content-Type",
+                "value":       "application/json",
                 "description": "Request body content type",
             })
     return headers
 
 
-def _postman_url(api: dict, base_url: str) -> dict:
-    path = api.get("path", "")
-    # Convert {param} and {param:.+} to :param for Postman
-    import re
-    postman_path = re.sub(r'\{([^}:]+)(?::[^}]*)?\}', r':\1', path)
-    segments = [s for s in postman_path.split("/") if s]
-
-    query = []
-    for qp in _safe_list((api.get("request") or {}).get("query_params")):
-        query.append({
-            "key":   qp.get("name", ""),
-            "value": str(qp.get("example", "")),
+def _postman_url(api: dict) -> dict:
+    postman_path = _normalize_path_postman(api.get("path", ""))
+    segments     = [s for s in postman_path.split("/") if s]
+    query = [
+        {
+            "key":      qp.get("name", ""),
+            "value":    str(qp.get("example", "")),
             "description": qp.get("description", ""),
             "disabled": not qp.get("required", False),
-        })
-
+        }
+        for qp in _safe_list((api.get("request") or {}).get("query_params"))
+    ]
     return {
-        "raw":      f"{base_url}/{'/'.join(segments)}",
+        "raw":      "{{base_url}}/" + "/".join(segments),
         "protocol": "https",
         "host":     ["{{base_url}}"],
         "path":     segments,
         "query":    query,
         "variable": [
-            {"key": re.sub(r'^:', '', s), "value": "", "description": ""}
+            {"key": s.lstrip(":"), "value": "", "description": ""}
             for s in segments if s.startswith(":")
         ],
     }
 
 
-def _build_postman_item(api: dict, base_url: str) -> dict:
+def _build_postman_item(api: dict) -> dict:
     method  = api.get("method", "GET")
     path    = api.get("path", "")
     summary = (api.get("overview") or {}).get("summary", path)
-    label   = api.get("label", "")
-    name    = label if label else f"{method} {path}"
+    name    = api.get("label") or f"{method} {path}"
 
     item = {
         "name": name,
         "request": {
             "method":      method,
             "header":      _postman_headers(api),
-            "url":         _postman_url(api, base_url),
+            "url":         _postman_url(api),
             "description": summary,
         },
         "response": [],
@@ -146,19 +151,16 @@ def _build_postman_item(api: dict, base_url: str) -> dict:
     if body:
         item["request"]["body"] = body
 
-    # Add example success response
     for s in _safe_list((api.get("response") or {}).get("success")):
-        resp_fields = _safe_list(s.get("fields"))
-        if resp_fields:
-            example_body = {f.get("field",""): f.get("example","") for f in resp_fields}
-        else:
-            example_body = s.get("example") or {}
+        resp_fields  = _safe_list(s.get("fields"))
+        example_body = {f.get("field", ""): f.get("example", "") for f in resp_fields} \
+                       if resp_fields else (s.get("example") or {})
         item["response"].append({
-            "name":            f"{s.get('status_code',200)} Example",
+            "name":            f"{s.get('status_code', 200)} Example",
             "originalRequest": item["request"],
-            "status":          "OK" if s.get("status_code",200) == 200 else "Accepted",
+            "status":          "OK",
             "code":            s.get("status_code", 200),
-            "header":          [{"key":"Content-Type","value":"application/json"}],
+            "header":          [{"key": "Content-Type", "value": "application/json"}],
             "body":            json.dumps(example_body, indent=2),
         })
 
@@ -166,62 +168,51 @@ def _build_postman_item(api: dict, base_url: str) -> dict:
 
 
 def generate_postman(cfg: Config, apis: List[dict]) -> None:
-    """Generate one Postman collection per service."""
-    postman_dir = os.path.join(cfg.output_dir, "postman")
-    os.makedirs(postman_dir, exist_ok=True)
-
-    # Group by service
+    """One Postman collection per service → postman_collection/"""
     by_service = defaultdict(list)
     for api in apis:
         by_service[api.get("service", cfg.service)].append(api)
 
     for service, service_apis in by_service.items():
-        # Group by first path segment as folder
         folders = defaultdict(list)
         for api in service_apis:
-            path = api.get("path", "/")
-            segment = path.strip("/").split("/")[0] if "/" in path.strip("/") else "root"
-            folders[segment].append(_build_postman_item(api, "{{base_url}}"))
-
-        items = []
-        for folder_name, folder_items in sorted(folders.items()):
-            items.append({
-                "name":  folder_name,
-                "item":  folder_items,
-            })
+            segment = api.get("path", "/").strip("/").split("/")[0] or "root"
+            folders[segment].append(_build_postman_item(api))
 
         collection = {
             "info": {
                 "_postman_id": str(uuid.uuid4()),
                 "name":        f"Doctor — {service}",
-                "description": f"Auto-generated by Doctor (api-doc-forge). Service: {service}",
+                "description": f"Auto-generated by Doctor. Service: {service}",
                 "schema":      "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
             },
             "variable": [
                 {"key": "base_url", "value": "https://your-service-host", "type": "string"}
             ],
-            "item": items,
+            "item": [
+                {"name": folder, "item": items}
+                for folder, items in sorted(folders.items())
+            ],
         }
 
-        out_path = os.path.join(postman_dir, f"{service}.postman_collection.json")
+        out_path = os.path.join(cfg.postman_dir, f"{service}.postman_collection.json")
         with open(out_path, "w") as f:
             json.dump(collection, f, indent=2)
-        print(f"   ✓  postman/{service}.postman_collection.json")
+        print(f"   ✓  postman_collection/{service}.postman_collection.json")
 
 
-# ─── 2. Mermaid Data Model Diagram ───────────────────────────────────────────
+# ─── 2. Mermaid Data Model (per API) ─────────────────────────────────────────
 
-def _mermaid_data_model(api: dict) -> str:
-    """Generate a Mermaid classDiagram for the API's domain entities."""
-    dm       = api.get("data_model") or {}
-    entities = _safe_list(dm.get("entities"))
+def _mermaid_class_diagram(api: dict) -> str:
+    """Mermaid classDiagram for one API's domain entities."""
+    entities = _safe_list((api.get("data_model") or {}).get("entities"))
     if not entities:
         return ""
 
     lines = ["```mermaid", "classDiagram"]
 
     for ent in entities:
-        name   = ent.get("name", "").replace(" ", "_").replace("-", "_")
+        name   = re.sub(r'[^a-zA-Z0-9_]', '_', ent.get("name", ""))
         etype  = ent.get("type", "")
         fields = _safe_list(ent.get("fields"))
 
@@ -230,19 +221,16 @@ def _mermaid_data_model(api: dict) -> str:
             lines.append(f"    <<{etype}>>")
         for f in fields:
             fname     = f.get("field", "")
-            ftype     = f.get("type", "String").replace(" ", "").replace("|", "_or_")
+            ftype     = (f.get("type") or "String").replace(" ", "").replace("|", "_or_")
             nullable  = "?" if f.get("nullable", True) else ""
             enum_vals = _safe_str_list(f.get("enum_values"))
-            enum_str  = f" // {', '.join(enum_vals)}" if enum_vals else ""
-            lines.append(f"    {ftype}{nullable} {fname}{enum_str}")
+            comment   = f" // {', '.join(enum_vals)}" if enum_vals else ""
+            lines.append(f"    {ftype}{nullable} {fname}{comment}")
         lines.append("  }")
 
-    # Relationships
     for ent in entities:
-        name = ent.get("name", "").replace(" ", "_").replace("-", "_")
+        name = re.sub(r'[^a-zA-Z0-9_]', '_', ent.get("name", ""))
         for rel in _safe_str_list(ent.get("relationships")):
-            # Parse common patterns: "X hasMany Y", "X extends Y", "X references Y"
-            import re
             m = re.match(
                 r'(\w+)?\s*(hasMany|hasOne|extends|references|contains|uses|belongsTo)\s+(\w+)',
                 rel, re.IGNORECASE
@@ -260,48 +248,68 @@ def _mermaid_data_model(api: dict) -> str:
                     "uses":       f"  {left} ..> {right}",
                     "belongsto":  f"  {left} --> {right}",
                 }
-                arrow = arrow_map.get(rtype, f"  {left} --> {right}")
-                lines.append(arrow)
+                lines.append(arrow_map.get(rtype, f"  {left} --> {right}"))
 
     lines.append("```")
     return "\n".join(lines)
 
 
-# ─── 3. ER Diagram ───────────────────────────────────────────────────────────
-
-def _mermaid_er_diagram(apis: List[dict]) -> str:
-    """Generate a Mermaid erDiagram across all APIs for a service."""
-    lines = ["```mermaid", "erDiagram"]
-
-    seen_entities = set()
-
+def generate_data_model_charts(cfg: Config, apis: List[dict]) -> None:
+    """One Mermaid classDiagram per API → data_model/"""
     for api in apis:
-        dm       = api.get("data_model") or {}
-        entities = _safe_list(dm.get("entities"))
+        diagram = _mermaid_class_diagram(api)
+        if not diagram:
+            continue
 
+        api_id  = api.get("api_id", "unknown")
+        method  = api.get("method", "")
+        path    = api.get("path", "")
+        summary = (api.get("overview") or {}).get("summary", "")
+
+        content = f"# Data Model — `{method}` {path}\n\n"
+        if summary:
+            content += f"_{summary}_\n\n"
+        content += diagram + "\n"
+
+        out_path = os.path.join(cfg.data_model_dir, f"{api_id}_datamodel.md")
+        with open(out_path, "w") as f:
+            f.write(content)
+        print(f"   ✓  data_model/{api_id}_datamodel.md")
+
+
+# ─── 3. ER Diagram (per SERVICE) ─────────────────────────────────────────────
+
+def _mermaid_er_diagram(service_apis: List[dict]) -> str:
+    """Mermaid erDiagram combining all entities across a service."""
+    lines = ["```mermaid", "erDiagram"]
+    seen  = set()
+
+    for api in service_apis:
+        entities = _safe_list((api.get("data_model") or {}).get("entities"))
         for ent in entities:
-            name = ent.get("name", "").replace(" ", "_").replace("-", "_")
-            if name in seen_entities:
+            name = re.sub(r'[^a-zA-Z0-9_]', '_', ent.get("name", ""))
+            if not name or name in seen:
                 continue
-            seen_entities.add(name)
+            seen.add(name)
 
             fields = _safe_list(ent.get("fields"))
             lines.append(f"  {name} {{")
             for f in fields:
-                fname    = f.get("field", "").replace("-", "_")
-                ftype    = (f.get("type") or "String").split("|")[0].split("<")[0].strip()
-                ftype    = ftype.replace(" ", "_") or "String"
-                nullable = "nullable" if f.get("nullable", True) else "not_null"
+                fname     = re.sub(r'[^a-zA-Z0-9_]', '_', f.get("field", ""))
+                ftype     = (f.get("type") or "String").split("|")[0].split("<")[0].strip()
+                ftype     = re.sub(r'[^a-zA-Z0-9_]', '_', ftype) or "String"
+                nullable  = "nullable" if f.get("nullable", True) else "not_null"
                 enum_vals = _safe_str_list(f.get("enum_values"))
-                comment  = f'"{", ".join(enum_vals[:3])}"' if enum_vals else f'"{f.get("description","")[:40]}"' if f.get("description") else '""'
+                desc      = f.get("description", "")
+                comment   = f'"{", ".join(enum_vals[:3])}"' if enum_vals \
+                            else f'"{desc[:40]}"' if desc else '""'
                 lines.append(f"    {ftype} {fname} {nullable} {comment}")
             lines.append("  }")
 
-        # ER relationships from data model
+        # Relationships
         for ent in entities:
-            name = ent.get("name", "").replace(" ", "_").replace("-", "_")
+            name = re.sub(r'[^a-zA-Z0-9_]', '_', ent.get("name", ""))
             for rel in _safe_str_list(ent.get("relationships")):
-                import re
                 m = re.match(
                     r'(\w+)?\s*(hasMany|hasOne|extends|references|contains|belongsTo)\s+(\w+)',
                     rel, re.IGNORECASE
@@ -318,83 +326,274 @@ def _mermaid_er_diagram(apis: List[dict]) -> str:
                         "contains":   f"  {left} ||--|{{ {right} : contains",
                         "belongsto":  f"  {left} }}o--|| {right} : belongs_to",
                     }
-                    arrow = er_map.get(rtype, f"  {left} }}o--o{{ {right} : relates")
-                    lines.append(arrow)
+                    lines.append(er_map.get(rtype, f"  {left} }}o--o{{ {right} : relates"))
 
     lines.append("```")
     return "\n".join(lines)
 
 
-def generate_diagrams(cfg: Config, apis: List[dict]) -> None:
-    """Generate per-API Mermaid diagrams and a combined ER diagram per service."""
-    diagrams_dir = os.path.join(cfg.output_dir, "diagrams")
-    os.makedirs(diagrams_dir, exist_ok=True)
-
-    # Per-API data model diagrams
-    for api in apis:
-        api_id  = api.get("api_id", "unknown")
-        diagram = _mermaid_data_model(api)
-        if not diagram:
-            continue
-        method  = api.get("method", "")
-        path    = api.get("path", "")
-        summary = (api.get("overview") or {}).get("summary", "")
-
-        content = f"# Data Model — `{method}` {path}\n\n"
-        if summary:
-            content += f"_{summary}_\n\n"
-        content += "## Class Diagram\n\n"
-        content += diagram + "\n"
-
-        out_path = os.path.join(diagrams_dir, f"{api_id}_datamodel.md")
-        with open(out_path, "w") as f:
-            f.write(content)
-        print(f"   ✓  diagrams/{api_id}_datamodel.md")
-
-    # Combined ER diagram per service
+def generate_er_diagrams(cfg: Config, apis: List[dict]) -> None:
+    """One ER diagram per service → db_entity_relations/"""
     by_service = defaultdict(list)
     for api in apis:
         by_service[api.get("service", cfg.service)].append(api)
 
     for service, service_apis in by_service.items():
         er = _mermaid_er_diagram(service_apis)
-        content = f"# ER Diagram — {service}\n\n"
-        content += "_Entity relationships across all documented APIs_\n\n"
+        content  = f"# Entity Relationship Diagram — {service}\n\n"
+        content += "_Combined DB schema across all documented APIs for this service_\n\n"
         content += er + "\n"
 
-        out_path = os.path.join(diagrams_dir, f"{service}_er_diagram.md")
+        out_path = os.path.join(cfg.db_er_dir, f"{service}_er_diagram.md")
         with open(out_path, "w") as f:
             f.write(content)
-        print(f"   ✓  diagrams/{service}_er_diagram.md")
+        print(f"   ✓  db_entity_relations/{service}_er_diagram.md")
 
 
-# ─── Embed diagrams into existing API docs ────────────────────────────────────
+# ─── 4. Swagger / OpenAPI 3.0 YAML (per SERVICE) ────────────────────────────
 
-def embed_diagrams_in_docs(cfg: Config, apis: List[dict]) -> None:
-    """Append Mermaid data model diagram to each existing API markdown doc."""
+def _field_to_schema(f: dict) -> dict:
+    """Convert an analysis field dict to an OpenAPI schema dict."""
+    ftype   = (f.get("type") or "string").lower()
+    nested  = _safe_list(f.get("nested_fields"))
+    enum_vals = _safe_str_list(f.get("enum_values"))
+
+    if nested:
+        return {
+            "type":        "object",
+            "description": f.get("description", ""),
+            "properties":  {n.get("field", ""): _field_to_schema(n) for n in nested},
+        }
+
+    schema: dict = {"description": f.get("description", "")}
+
+    if "int" in ftype or "integer" in ftype:
+        schema["type"] = "integer"
+    elif "float" in ftype or "double" in ftype or "decimal" in ftype or "number" in ftype:
+        schema["type"] = "number"
+    elif "bool" in ftype:
+        schema["type"] = "boolean"
+    elif "array" in ftype or "list" in ftype:
+        schema["type"]  = "array"
+        schema["items"] = {"type": "string"}
+    elif "object" in ftype or "map" in ftype or "dict" in ftype:
+        schema["type"] = "object"
+    else:
+        schema["type"] = "string"
+
+    if enum_vals:
+        schema["enum"] = enum_vals
+
+    example = f.get("example")
+    if example not in (None, "", "string"):
+        schema["example"] = example
+
+    return schema
+
+
+def _yaml_dump(obj, indent=0) -> str:
+    """Minimal YAML serializer — no external dependency needed."""
+    pad = "  " * indent
+    lines = []
+
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            if isinstance(v, (dict, list)) and v:
+                lines.append(f"{pad}{k}:")
+                lines.append(_yaml_dump(v, indent + 1))
+            elif v is None:
+                lines.append(f"{pad}{k}: null")
+            elif isinstance(v, bool):
+                lines.append(f"{pad}{k}: {'true' if v else 'false'}")
+            elif isinstance(v, (int, float)):
+                lines.append(f"{pad}{k}: {v}")
+            else:
+                safe = str(v).replace('"', '\\"')
+                if any(c in safe for c in [':', '#', '{', '}', '[', ']', ',', '&', '*', '?', '|', '-', '<', '>', '=', '!', '%', '@', '\\']):
+                    lines.append(f'{pad}{k}: "{safe}"')
+                else:
+                    lines.append(f"{pad}{k}: {safe}")
+
+    elif isinstance(obj, list):
+        for item in obj:
+            if isinstance(item, dict):
+                first = True
+                for k, v in item.items():
+                    prefix = f"{pad}- " if first else f"{pad}  "
+                    first  = False
+                    if isinstance(v, (dict, list)) and v:
+                        lines.append(f"{prefix}{k}:")
+                        lines.append(_yaml_dump(v, indent + 2))
+                    elif v is None:
+                        lines.append(f"{prefix}{k}: null")
+                    elif isinstance(v, bool):
+                        lines.append(f"{prefix}{k}: {'true' if v else 'false'}")
+                    elif isinstance(v, (int, float)):
+                        lines.append(f"{prefix}{k}: {v}")
+                    else:
+                        safe = str(v).replace('"', '\\"')
+                        if any(c in safe for c in [':', '#', '{', '}', '[', ']']):
+                            lines.append(f'{prefix}{k}: "{safe}"')
+                        else:
+                            lines.append(f"{prefix}{k}: {safe}")
+            else:
+                safe = str(item).replace('"', '\\"')
+                lines.append(f"{pad}- {safe}")
+
+    return "\n".join(lines)
+
+
+def _build_openapi(service: str, service_apis: List[dict]) -> dict:
+    """Build an OpenAPI 3.0 spec dict from analysis JSON."""
+    paths: dict = {}
+    schemas: dict = {}
+
+    for api in service_apis:
+        method   = api.get("method", "GET").lower()
+        path     = re.sub(r'\{([^}:]+)(?::[^}]*)?\}', r'{\1}', api.get("path", "/"))
+        ov       = api.get("overview") or {}
+        rq       = api.get("request") or {}
+        rs       = api.get("response") or {}
+        dm       = api.get("data_model") or {}
+        api_id   = _slugify(api.get("api_id", ""))
+
+        # Parameters
+        parameters = []
+        for pp in _safe_list(rq.get("path_params")):
+            parameters.append({
+                "name":        pp.get("name", ""),
+                "in":          "path",
+                "required":    True,
+                "description": pp.get("description", ""),
+                "schema":      {"type": "string"},
+            })
+        for qp in _safe_list(rq.get("query_params")):
+            parameters.append({
+                "name":        qp.get("name", ""),
+                "in":          "query",
+                "required":    qp.get("required", False),
+                "description": qp.get("description", ""),
+                "schema":      {"type": "string"},
+            })
+        for h in _safe_list(rq.get("headers")):
+            if h.get("name", "").lower() not in ("content-type", "accept"):
+                parameters.append({
+                    "name":        h.get("name", ""),
+                    "in":          "header",
+                    "required":    h.get("required", False),
+                    "description": h.get("description", ""),
+                    "schema":      {"type": "string"},
+                })
+
+        # Request body
+        request_body = None
+        body = rq.get("body") or {}
+        if isinstance(body, dict) and body.get("fields"):
+            schema_name  = f"{api_id}_Request"
+            props        = {f.get("field", ""): _field_to_schema(f)
+                           for f in _safe_list(body["fields"])}
+            required_flds = [f.get("field", "") for f in _safe_list(body["fields"])
+                             if f.get("required")]
+            schemas[schema_name] = {
+                "type":        "object",
+                "description": body.get("description", ""),
+                "properties":  props,
+            }
+            if required_flds:
+                schemas[schema_name]["required"] = required_flds
+
+            request_body = {
+                "required": True,
+                "content": {
+                    "application/json": {
+                        "schema": {"$ref": f"#/components/schemas/{schema_name}"}
+                    }
+                },
+            }
+
+        # Responses
+        responses: dict = {}
+        for s in _safe_list(rs.get("success")):
+            code = str(s.get("status_code", 200))
+            resp_fields = _safe_list(s.get("fields"))
+            if resp_fields:
+                schema_name = f"{api_id}_Response_{code}"
+                schemas[schema_name] = {
+                    "type":       "object",
+                    "properties": {f.get("field", ""): _field_to_schema(f)
+                                   for f in resp_fields},
+                }
+                responses[code] = {
+                    "description": s.get("description", "Success"),
+                    "content": {
+                        "application/json": {
+                            "schema": {"$ref": f"#/components/schemas/{schema_name}"}
+                        }
+                    },
+                }
+            else:
+                responses[code] = {"description": s.get("description", "Success")}
+
+        for e in _safe_list(rs.get("errors")):
+            code = str(e.get("status_code", 400))
+            responses[code] = {"description": e.get("description", "Error")}
+
+        if not responses:
+            responses["200"] = {"description": "Success"}
+
+        # Build operation
+        operation: dict = {
+            "summary":     ov.get("summary", ""),
+            "description": ov.get("purpose", ""),
+            "operationId": api_id,
+            "tags":        [api.get("service", service)],
+            "parameters":  parameters,
+            "responses":   responses,
+        }
+        if request_body:
+            operation["requestBody"] = request_body
+
+        # Add entities to schemas
+        for ent in _safe_list(dm.get("entities")):
+            ent_name = _slugify(ent.get("name", ""))
+            if ent_name and ent_name not in schemas:
+                props = {f.get("field", ""): _field_to_schema(f)
+                         for f in _safe_list(ent.get("fields"))}
+                schemas[ent_name] = {
+                    "type":        "object",
+                    "description": ent.get("description", ""),
+                    "properties":  props,
+                }
+
+        paths.setdefault(path, {})[method] = operation
+
+    return {
+        "openapi": "3.0.3",
+        "info": {
+            "title":       f"{service} API",
+            "description": f"Auto-generated OpenAPI documentation for {service} by Doctor",
+            "version":     "1.0.0",
+        },
+        "paths": paths,
+        "components": {"schemas": schemas} if schemas else {},
+    }
+
+
+def generate_swagger(cfg: Config, apis: List[dict]) -> None:
+    """One OpenAPI 3.0 YAML per service → api_document/"""
+    by_service = defaultdict(list)
     for api in apis:
-        api_id  = api.get("api_id", "")
-        doc_path = os.path.join(cfg.docs_dir, f"{api_id}.md")
-        if not os.path.exists(doc_path):
-            continue
+        by_service[api.get("service", cfg.service)].append(api)
 
-        diagram = _mermaid_data_model(api)
-        if not diagram:
-            continue
+    for service, service_apis in by_service.items():
+        spec    = _build_openapi(service, service_apis)
+        content = "# Auto-generated by Doctor — do not edit manually\n"
+        content += _yaml_dump(spec)
 
-        with open(doc_path) as f:
-            existing = f.read()
-
-        # Don't embed twice
-        if "classDiagram" in existing:
-            continue
-
-        with open(doc_path, "a") as f:
-            f.write("\n## Data Model Diagram\n\n")
-            f.write(diagram)
-            f.write("\n")
-
-    print(f"   ✓  Mermaid diagrams embedded in output/docs/")
+        out_path = os.path.join(cfg.api_doc_dir, f"{service}_openapi.yaml")
+        with open(out_path, "w") as f:
+            f.write(content)
+        print(f"   ✓  api_document/{service}_openapi.yaml")
 
 
 # ─── Phase entry point ────────────────────────────────────────────────────────
@@ -412,17 +611,23 @@ def run(cfg: Config) -> None:
     print("📮 Postman Collections")
     generate_postman(cfg, apis)
 
-    print("\n📊 Mermaid Diagrams")
-    generate_diagrams(cfg, apis)
+    print("\n📐 Data Model Charts (per API)")
+    generate_data_model_charts(cfg, apis)
+
+    print("\n🗄️  ER Diagrams (per service)")
+    generate_er_diagrams(cfg, apis)
+
+    print("\n📄 OpenAPI / Swagger YAML (per service)")
+    generate_swagger(cfg, apis)
 
     print(f"""
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ✅ Artifacts complete!
    output/
-   ├── postman/
-   │   └── <service>.postman_collection.json
-   └── diagrams/
-       ├── <api_id>_datamodel.md   (per API)
-       └── <service>_er_diagram.md (per service)
+   ├── documents/            ← API markdown docs
+   ├── data_model/           ← Mermaid class diagrams (per API)
+   ├── db_entity_relations/  ← Mermaid ER diagrams (per service)
+   ├── postman_collection/   ← Postman collections (per service)
+   └── api_document/         ← OpenAPI 3.0 YAML (per service)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 """)

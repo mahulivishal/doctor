@@ -16,11 +16,20 @@ echo "📁 Creating workspace directories..."
 mkdir -p workspace/repos
 mkdir -p workspace/manifests
 mkdir -p workspace/analysis
-mkdir -p output/docs
+mkdir -p output/documents
+mkdir -p output/data_model
+mkdir -p output/db_entity_relations
+mkdir -p output/postman_collection
+mkdir -p output/api_document
+
 echo "   ✅  workspace/repos/"
 echo "   ✅  workspace/manifests/"
 echo "   ✅  workspace/analysis/"
-echo "   ✅  output/docs/"
+echo "   ✅  output/documents/"
+echo "   ✅  output/data_model/"
+echo "   ✅  output/db_entity_relations/"
+echo "   ✅  output/postman_collection/"
+echo "   ✅  output/api_document/"
 
 # --- .gitignore ---
 echo ""
