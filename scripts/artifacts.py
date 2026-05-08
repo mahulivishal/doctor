@@ -606,28 +606,39 @@ def run(cfg: Config) -> None:
         print("   ⚠️  No analysis files found — run Phase 2 first")
         return
 
+    skip = cfg.skip
     print(f"   Generating artifacts for {len(apis)} APIs...\n")
 
-    print("📮 Postman Collections")
-    generate_postman(cfg, apis)
+    if "postman" not in skip:
+        print("📮 Postman Collections")
+        generate_postman(cfg, apis)
+        print()
 
-    print("\n📐 Data Model Charts (per API)")
-    generate_data_model_charts(cfg, apis)
+    if "datamodel" not in skip:
+        print("📐 Data Model Charts (per API)")
+        generate_data_model_charts(cfg, apis)
+        print()
 
-    print("\n🗄️  ER Diagrams (per service)")
-    generate_er_diagrams(cfg, apis)
+    if "er" not in skip:
+        print("🗄️  ER Diagrams (per service)")
+        generate_er_diagrams(cfg, apis)
+        print()
 
-    print("\n📄 OpenAPI / Swagger YAML (per service)")
-    generate_swagger(cfg, apis)
+    if "swagger" not in skip:
+        print("📄 OpenAPI / Swagger YAML (per service)")
+        generate_swagger(cfg, apis)
+        print()
 
-    print(f"""
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-✅ Artifacts complete!
-   output/
-   ├── documents/            ← API markdown docs
-   ├── data_model/           ← Mermaid class diagrams (per API)
-   ├── db_entity_relations/  ← Mermaid ER diagrams (per service)
-   ├── postman_collection/   ← Postman collections (per service)
-   └── api_document/         ← OpenAPI 3.0 YAML (per service)
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-""")
+    active = [k for k in ["postman","datamodel","er","swagger"] if k not in skip]
+    skipped = [k for k in ["postman","datamodel","er","swagger"] if k in skip]
+
+    print("━" * 50)
+    print("✅ Artifacts complete!")
+    print("   output/")
+    if "datamodel" not in skip: print("   ├── data_model/           ← class diagrams")
+    if "er"        not in skip: print("   ├── db_entity_relations/  ← ER diagrams")
+    if "postman"   not in skip: print("   ├── postman_collection/   ← Postman collections")
+    if "swagger"   not in skip: print("   └── api_document/         ← OpenAPI YAML")
+    if skipped:
+        print(f"   ⏭  Skipped: {', '.join(skipped)}")
+    print("━" * 50)

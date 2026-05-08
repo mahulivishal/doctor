@@ -5,11 +5,10 @@ One subprocess per endpoint, validated before saving.
 import json
 import os
 import re
-import subprocess
-import tempfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Optional
 from config import Config
+import subprocess
 
 REQUIRED_KEYS = [
     "api_id", "service", "method", "path",
@@ -253,12 +252,10 @@ def _parse_output(output: str) -> Optional[dict]:
 
 
 def _validate(data: dict) -> List[str]:
-    """Return list of missing required keys."""
     return [k for k in REQUIRED_KEYS if k not in data]
 
 
 def _is_valid_cached(path: str) -> bool:
-    """Check if a cached analysis file is valid."""
     if not os.path.isfile(path) or os.path.getsize(path) == 0:
         return False
     try:
@@ -270,10 +267,10 @@ def _is_valid_cached(path: str) -> bool:
 
 
 def analyze_endpoint(cfg: Config, ep: dict, max_retries: int = 3) -> bool:
-    """
-    Analyze one endpoint. Returns True on success, False on failure.
-    All I/O uses temp files — no shell quoting, safe for any path/value.
-    """
+    """Analyze one endpoint using Anthropic SDK. Returns True on success."""
+    import anthropic
+    from token_tracker import tracker
+
     api_id     = ep.get("id", "")
     method     = ep.get("method", "")
     ep_path    = ep.get("path", "")
@@ -285,56 +282,71 @@ def analyze_endpoint(cfg: Config, ep: dict, max_retries: int = 3) -> bool:
 
     output_file = os.path.join(cfg.analysis_dir, f"{api_id}.json")
 
-    # Skip if cached and valid
     if _is_valid_cached(output_file):
         print(f"   ⏭  [{svc_name}] {method} {ep_path} (cached)")
         return True
     elif os.path.exists(output_file):
-        print(f"   ♻️  [{svc_name}] {method} {ep_path} (re-analyzing invalid cache)")
+        print(f"   ♻️  [{svc_name}] {method} {ep_path} (re-analyzing)")
         os.remove(output_file)
 
     print(f"   🔬 [{svc_name}] {method} {ep_path}")
 
     prompt = ANALYSIS_PROMPT_TEMPLATE.format(
-        api_id=api_id,
-        svc_name=svc_name,
-        method=method,
-        ep_path=ep_path,
-        handler=handler,
-        handler_fn=handler_fn,
-        auth=auth,
+        api_id=api_id, svc_name=svc_name, method=method,
+        ep_path=ep_path, handler=handler, handler_fn=handler_fn, auth=auth,
     )
+
+    client = anthropic.Anthropic(api_key=cfg.api_key)
 
     for attempt in range(1, max_retries + 1):
         if attempt > 1:
             print(f"      ↻  [{svc_name}] {api_id} retry {attempt}/{max_retries}")
-
-        # Write prompt to temp file — completely bypasses shell quoting
-        with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".txt", delete=False
-        ) as pf:
-            pf.write(prompt)
-            prompt_file = pf.name
-
+        
         try:
-            cmd = [cfg.claude_bin, "-p", prompt,
-                   "--allowedTools", "Read,Glob,Grep"]
-            if cfg.claude_model:
-                cmd.extend(["--model", cfg.claude_model])
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                cwd=svc_path,
-            )
-            output = result.stdout + result.stderr
+            if cfg.api_key:
+                import anthropic
+                client = anthropic.Anthropic(api_key=cfg.api_key)
+                response = client.messages.create(
+                    model=cfg.claude_model,
+                    max_tokens=8096,
+                    tools=[
+                        {"name": "Read", "description": "Read a file from disk",
+                         "input_schema": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}},
+                        {"name": "Glob", "description": "List files matching a pattern",
+                         "input_schema": {"type": "object", "properties": {"pattern": {"type": "string"}}, "required": ["pattern"]}},
+                        {"name": "Grep", "description": "Search for a pattern in files",
+                         "input_schema": {"type": "object", "properties": {"pattern": {"type": "string"}, "path": {"type": "string"}}, "required": ["pattern"]}},
+                    ],
+                    messages=[{"role": "user", "content": prompt}],
+                )
+                tracker.add(response.usage.input_tokens, response.usage.output_tokens)
+                output = "".join(
+                    block.text for block in response.content
+                    if hasattr(block, "text")
+                )
+            else:
+                result = subprocess.run(
+                    [cfg.claude_bin, "-p", prompt,
+                     "--allowedTools", "Read,Glob,Grep"],
+                    capture_output=True,
+                    text=True,
+                    cwd=svc_path,
+                )
+                output = result.stdout + result.stderr
 
-        finally:
-            os.unlink(prompt_file)
+        except Exception as e:
+            print(f"      ⚠️  Attempt {attempt}: error — {e}")
+            continue
 
         data = _parse_output(output)
         if data is None:
             print(f"      ⚠️  Attempt {attempt}: PARSE_FAILED")
+            # Save debug file on last attempt
+            if attempt == max_retries:
+                debug = os.path.join(cfg.analysis_dir, f"DEBUG_{api_id}.txt")
+                with open(debug, "w") as f:
+                    f.write(output)
+                print(f"         Raw output saved → {debug}")
             continue
 
         missing = _validate(data)
@@ -342,7 +354,6 @@ def analyze_endpoint(cfg: Config, ep: dict, max_retries: int = 3) -> bool:
             print(f"      ⚠️  Attempt {attempt}: VALIDATION_FAILED missing={missing}")
             continue
 
-        # Valid — save
         os.makedirs(cfg.analysis_dir, exist_ok=True)
         with open(output_file, "w") as f:
             json.dump(data, f, indent=2)
@@ -354,7 +365,6 @@ def analyze_endpoint(cfg: Config, ep: dict, max_retries: int = 3) -> bool:
 
 
 def run(cfg: Config, endpoints: List[dict], target_id: str = "") -> dict:
-    """Run parallel analysis. Returns {done, failed, skipped} counts."""
     if target_id:
         endpoints = [ep for ep in endpoints if ep.get("id") == target_id]
         print(f"🎯 Single-endpoint mode: {target_id}")
@@ -367,22 +377,14 @@ def run(cfg: Config, endpoints: List[dict], target_id: str = "") -> dict:
     print("🚀 Starting analysis...")
     print()
 
-    done = failed = skipped = 0
+    done = failed = 0
 
     with ThreadPoolExecutor(max_workers=cfg.parallel_workers) as executor:
-        futures = {
-            executor.submit(analyze_endpoint, cfg, ep): ep
-            for ep in endpoints
-        }
+        futures = {executor.submit(analyze_endpoint, cfg, ep): ep for ep in endpoints}
         for future in as_completed(futures):
             ep = futures[future]
             try:
-                success = future.result()
-                if success:
-                    # Distinguish cached vs newly analyzed
-                    api_id = ep.get("id", "")
-                    output_file = os.path.join(cfg.analysis_dir, f"{api_id}.json")
-                    # If file existed before we started, it was skipped
+                if future.result():
                     done += 1
                 else:
                     failed += 1

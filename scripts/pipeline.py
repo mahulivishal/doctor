@@ -23,23 +23,30 @@ import time
 sys.path.insert(0, os.path.dirname(__file__))
 
 import config as cfg_module
+from config import SKIP_OPTIONS
 import discover
 import analyze
 import render
 import artifacts
-import assemble
+from token_tracker import tracker
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="api-doc-forge pipeline")
-    parser.add_argument("--from",    dest="from_phase", type=int, default=1,
+    parser = argparse.ArgumentParser(description="Doctor — API documentation pipeline")
+    parser.add_argument("--from",     dest="from_phase", type=int, default=1,
                         help="Start from phase N (skips reset)")
-    parser.add_argument("--only",    dest="only_phase", type=int, default=0,
+    parser.add_argument("--only",     dest="only_phase", type=int, default=0,
                         help="Run only phase N")
     parser.add_argument("--no-reset", action="store_true",
                         help="Skip workspace reset")
-    parser.add_argument("--api",     dest="target_api", default="",
+    parser.add_argument("--api",      dest="target_api", default="",
                         help="Re-run a single endpoint by ID")
+    parser.add_argument("--skip",     dest="skip", action="append", default=[],
+                        metavar="ARTIFACT",
+                        help=(
+                            "Skip an output artifact. Repeatable. Options:\n" +
+                            "\n".join(f"  {k}: {v}" for k, v in SKIP_OPTIONS.items())
+                        ))
     return parser.parse_args()
 
 
@@ -55,18 +62,11 @@ def reset(cfg):
         os.path.join(cfg.postman_dir,    "*"),
         os.path.join(cfg.api_doc_dir,    "*"),
     ]
-    files_to_remove = [
-        os.path.join(cfg.output_dir, "README.md"),
-        os.path.join(cfg.output_dir, "CHECKLIST.md"),
-        os.path.join(cfg.output_dir, "api-registry.json"),
-    ]
+
     for pattern in dirs_to_clear:
         for f in glob.glob(pattern):
             if os.path.isfile(f):   os.remove(f)
             elif os.path.isdir(f):  shutil.rmtree(f)
-    for f in files_to_remove:
-        if os.path.exists(f):
-            os.remove(f)
 
     for d in [cfg.manifests_dir, cfg.analysis_dir, cfg.docs_dir,
               cfg.data_model_dir, cfg.db_er_dir, cfg.postman_dir, cfg.api_doc_dir]:
@@ -131,13 +131,6 @@ def phase5_artifacts(cfg):
     artifacts.run(cfg)
 
 
-def phase6_assemble(cfg):
-    print("━" * 50)
-    print(f" Phase 5: Assembly")
-    print("━" * 50)
-    assemble.run(cfg)
-
-
 def load_manifest(cfg) -> list:
     """Load endpoints from existing manifest file."""
     manifest_path = os.path.join(
@@ -156,13 +149,24 @@ def main():
     args = parse_args()
     start = time.time()
 
+    # Validate skip options
+    invalid_skips = [s for s in args.skip if s not in SKIP_OPTIONS]
+    if invalid_skips:
+        print(f"❌ Unknown --skip value(s): {invalid_skips}")
+        print(f"   Valid options: {list(SKIP_OPTIONS.keys())}")
+        sys.exit(1)
+
+    skip = set(args.skip)
+    if skip:
+        print(f"⏭  Skipping: {', '.join(skip)}")
+
     # Load config
     project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    cfg = cfg_module.load(project_root)
+    cfg = cfg_module.load(project_root, skip=skip)
 
     print()
     print("╔══════════════════════════════════════════════╗")
-    print(f"║  api-doc-forge  ·  {cfg.service:<24} ║")
+    print(f"║  Doctor  ·  {cfg.service:<30} ║")
     print("╚══════════════════════════════════════════════╝")
     print()
 
@@ -171,7 +175,10 @@ def main():
         print(f"🎯 Single-endpoint mode: {args.target_api}")
         endpoints = load_manifest(cfg)
         phase3_analyze(cfg, endpoints, target_api=args.target_api)
-        phase4_render(cfg, target_api=args.target_api)
+        if "docs" not in skip:
+            phase4_render(cfg, target_api=args.target_api)
+        print()
+        print(tracker.summary())
         return
 
     # ── Determine reset ───────────────────────────────────────────────────
@@ -180,7 +187,6 @@ def main():
         and args.from_phase == 1
         and args.only_phase == 0
     )
-
     if do_reset:
         reset(cfg)
 
@@ -199,23 +205,20 @@ def main():
     if should_run(2):
         endpoints = phase2_discover(cfg)
         print()
-    
+
     if should_run(3):
         if endpoints is None:
             endpoints = load_manifest(cfg)
         phase3_analyze(cfg, endpoints)
         print()
 
-    if should_run(4):
+    if should_run(4) and "docs" not in skip:
         phase4_render(cfg)
         print()
 
     if should_run(5):
         phase5_artifacts(cfg)
         print()
-
-    if should_run(6):
-        phase6_assemble(cfg)
 
     # ── Summary ───────────────────────────────────────────────────────────
     elapsed = time.time() - start
@@ -225,12 +228,13 @@ def main():
         return len([f for f in os.listdir(d) if f.endswith(ext)]) if os.path.exists(d) else 0
 
     print(f"\n⏱  Total time: {mins}m {secs}s")
-    print(f"   output/documents/           → {_count(cfg.docs_dir, '.md')} API docs")
-    print(f"   output/data_model/          → {_count(cfg.data_model_dir, '.md')} class diagrams")
-    print(f"   output/db_entity_relations/ → {_count(cfg.db_er_dir, '.md')} ER diagram(s)")
-    print(f"   output/postman_collection/  → {_count(cfg.postman_dir, '.json')} collection(s)")
-    print(f"   output/api_document/        → {_count(cfg.api_doc_dir, '.yaml')} OpenAPI spec(s)")
+    if "docs"      not in skip: print(f"   output/documents/           → {_count(cfg.docs_dir, '.md')} API docs")
+    if "datamodel" not in skip: print(f"   output/data_model/          → {_count(cfg.data_model_dir, '.md')} class diagrams")
+    if "er"        not in skip: print(f"   output/db_entity_relations/ → {_count(cfg.db_er_dir, '.md')} ER diagram(s)")
+    if "postman"   not in skip: print(f"   output/postman_collection/  → {_count(cfg.postman_dir, '.json')} collection(s)")
+    if "swagger"   not in skip: print(f"   output/api_document/        → {_count(cfg.api_doc_dir, '.yaml')} OpenAPI spec(s)")
     print()
+    print(tracker.summary())
 
 
 if __name__ == "__main__":
