@@ -11,7 +11,6 @@ import subprocess
 from config import Config, TargetEndpoint
 from token_tracker import tracker
 
-
 DISCOVERY_PROMPT = """You are analyzing the '{svc_name}' service codebase.
 
 STEP 1 — Detect language and framework by reading:
