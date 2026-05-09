@@ -1,12 +1,12 @@
 """
-config.py — Loads and validates all configuration from .env, repos.yaml,
-and target-endpoints.yaml. Single source of truth for the entire pipeline.
+config.py — Loads and validates all configuration.
 """
 import os
 import re
 from pathlib import Path
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import List, Optional, Set
+import shutil
 
 
 @dataclass
@@ -25,6 +25,16 @@ class TargetEndpoint:
     service_name: Optional[str] = None
 
 
+# Valid skip keys — map to artifact/phase names
+SKIP_OPTIONS = {
+    "docs":      "Skip markdown API docs (documents/)",
+    "datamodel": "Skip Mermaid class diagrams (data_model/)",
+    "er":        "Skip ER diagrams (db_entity_relations/)",
+    "postman":   "Skip Postman collections (postman_collection/)",
+    "swagger":   "Skip OpenAPI YAML (api_document/)",
+}
+
+
 @dataclass
 class Config:
     # Repo
@@ -37,30 +47,50 @@ class Config:
     is_monorepo: bool
     services: List[ServiceConfig]
 
-    # Claude
+    # Claude / Anthropic
+    api_key: str           # ANTHROPIC_API_KEY
     claude_bin: str
     claude_model: str
     parallel_workers: int
 
+    # What to skip
+    skip: Set[str]         # subset of SKIP_OPTIONS keys
+
     # Endpoints
     target_endpoints: List[TargetEndpoint]
 
-    # Paths — workspace
+    # Workspace paths
     project_root: str
     analysis_dir: str
     manifests_dir: str
 
-    # Paths — output (one sub-folder per artifact type)
+    # Output paths
     output_dir: str
-    docs_dir: str           # output/documents/
-    data_model_dir: str     # output/data_model/
-    db_er_dir: str          # output/db_entity_relations/
-    postman_dir: str        # output/postman_collection/
-    api_doc_dir: str        # output/api_document/  (swagger yaml)
+    docs_dir: str
+    data_model_dir: str
+    db_er_dir: str
+    postman_dir: str
+    api_doc_dir: str
+
+
+def _strip_comments(content: str) -> str:
+    return '\n'.join(
+        line for line in content.splitlines()
+        if not line.strip().startswith('#')
+    )
+
+
+def _parse_list(content: str, key: str) -> List[str]:
+    pattern = rf'{re.escape(key)}:\s*\n((?:\s+-[^\n]+\n?)*)'
+    match = re.search(pattern, content)
+    if not match:
+        return []
+    return [re.sub(r'^\s*-\s*', '', l).strip()
+            for l in match.group(1).splitlines()
+            if l.strip().startswith('-')]
 
 
 def _find_claude() -> str:
-    import shutil
     found = shutil.which("claude")
     if found:
         return found
@@ -71,30 +101,12 @@ def _find_claude() -> str:
     ]:
         if os.path.isfile(c) and os.access(c, os.X_OK):
             return c
-    raise RuntimeError(
-        "claude binary not found. Install: npm install -g @anthropic-ai/claude-code"
-    )
+    return "claude"  # fall back and let subprocess handle the error
 
 
-def _parse_list(content: str, key: str) -> List[str]:
-    pattern = rf'{re.escape(key)}:\s*\n((?:\s+-[^\n]+\n?)*)'
-    match = re.search(pattern, content)
-    if not match:
-        return []
-    return [re.sub(r'^\s*-\s*', '', line).strip()
-            for line in match.group(1).splitlines()
-            if line.strip().startswith('-')]
-
-
-def _strip_comments(content: str) -> str:
-    return '\n'.join(
-        line for line in content.splitlines()
-        if not line.strip().startswith('#')
-    )
-
-
-def load(project_root: str = ".") -> Config:
+def load(project_root: str = ".", skip: Optional[Set[str]] = None) -> Config:
     project_root = str(Path(project_root).resolve())
+    skip = skip or set()
 
     # ── .env ──────────────────────────────────────────────────────────────
     env = {}
@@ -109,13 +121,17 @@ def load(project_root: str = ".") -> Config:
     repo     = env.get("REPO", "")
     branch   = env.get("BRANCH", "main")
     is_mono  = env.get("IS_MONOREPO", "false").lower() == "true"
-    model    = env.get("CLAUDE_MODEL", "")
+    model    = env.get("CLAUDE_MODEL", "claude-sonnet-4-5")
     workers  = int(env.get("PARALLEL_WORKERS", "4"))
+    api_key  = env.get("ANTHROPIC_API_KEY", "") or os.environ.get("ANTHROPIC_API_KEY", "")
 
     if not service:
         raise ValueError("SERVICE not set in .env")
     if not repo:
         raise ValueError("REPO not set in .env")
+    if not api_key:
+        print("ℹ️  ANTHROPIC_API_KEY not set — token tracking disabled")
+        print("   To enable: add ANTHROPIC_API_KEY=sk-ant-... to .env")
 
     repo_root = os.path.join(project_root, "workspace", "repos", service)
 
@@ -125,8 +141,7 @@ def load(project_root: str = ".") -> Config:
 
     if os.path.exists(repos_yaml):
         with open(repos_yaml) as f:
-            raw = f.read()
-        content = _strip_comments(raw)
+            content = _strip_comments(f.read())
 
         if is_mono:
             name_matches = re.findall(r'- name:\s*(\S+)', content)
@@ -158,9 +173,7 @@ def load(project_root: str = ".") -> Config:
 
     if os.path.exists(targets_yaml):
         with open(targets_yaml) as f:
-            raw = f.read()
-        content = _strip_comments(raw)
-
+            content = _strip_comments(f.read())
         paths     = re.findall(r'path:\s*"([^"]+)"', content)
         methods   = re.findall(r'method:\s*(\S+)',    content)
         labels    = re.findall(r'label:\s*"([^"]+)"', content)
@@ -170,45 +183,36 @@ def load(project_root: str = ".") -> Config:
         for i, path in enumerate(paths):
             target_endpoints.append(TargetEndpoint(
                 path=path,
-                method=methods[i]     if i < len(methods)    else "ANY",
-                label=labels[i]       if i < len(labels)     else "",
-                acl_priority=prios[i] if i < len(prios)      else "HIGH",
+                method=methods[i]      if i < len(methods)    else "ANY",
+                label=labels[i]        if i < len(labels)     else "",
+                acl_priority=prios[i]  if i < len(prios)      else "HIGH",
                 service_name=svc_names[i] if i < len(svc_names) else None,
             ))
 
     # ── Output directories ─────────────────────────────────────────────────
-    output_dir    = os.path.join(project_root, "output")
-    docs_dir      = os.path.join(output_dir, "documents")
+    output_dir     = os.path.join(project_root, "output")
+    docs_dir       = os.path.join(output_dir, "documents")
     data_model_dir = os.path.join(output_dir, "data_model")
-    db_er_dir     = os.path.join(output_dir, "db_entity_relations")
-    postman_dir   = os.path.join(output_dir, "postman_collection")
-    api_doc_dir   = os.path.join(output_dir, "api_document")
-
-    analysis_dir  = os.path.join(project_root, "workspace", "analysis")
-    manifests_dir = os.path.join(project_root, "workspace", "manifests")
+    db_er_dir      = os.path.join(output_dir, "db_entity_relations")
+    postman_dir    = os.path.join(output_dir, "postman_collection")
+    api_doc_dir    = os.path.join(output_dir, "api_document")
+    analysis_dir   = os.path.join(project_root, "workspace", "analysis")
+    manifests_dir  = os.path.join(project_root, "workspace", "manifests")
 
     for d in [analysis_dir, manifests_dir, output_dir,
               docs_dir, data_model_dir, db_er_dir, postman_dir, api_doc_dir]:
         os.makedirs(d, exist_ok=True)
 
+    claude_bin = _find_claude()
+    
     return Config(
-        service=service,
-        repo=repo,
-        branch=branch,
-        repo_root=repo_root,
-        is_monorepo=is_mono,
-        services=services,
-        claude_bin=_find_claude(),
-        claude_model=model,
-        parallel_workers=workers,
-        target_endpoints=target_endpoints,
+        service=service, repo=repo, branch=branch, repo_root=repo_root,
+        is_monorepo=is_mono, services=services,
+        api_key=api_key, claude_model=model, parallel_workers=workers,
+        skip=skip, target_endpoints=target_endpoints, claude_bin=claude_bin,
         project_root=project_root,
-        analysis_dir=analysis_dir,
-        manifests_dir=manifests_dir,
-        output_dir=output_dir,
-        docs_dir=docs_dir,
-        data_model_dir=data_model_dir,
-        db_er_dir=db_er_dir,
-        postman_dir=postman_dir,
-        api_doc_dir=api_doc_dir,
+        analysis_dir=analysis_dir, manifests_dir=manifests_dir,
+        output_dir=output_dir, docs_dir=docs_dir,
+        data_model_dir=data_model_dir, db_er_dir=db_er_dir,
+        postman_dir=postman_dir, api_doc_dir=api_doc_dir,
     )

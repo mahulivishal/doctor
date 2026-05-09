@@ -280,54 +280,95 @@ def generate_data_model_charts(cfg: Config, apis: List[dict]) -> None:
 # ─── 3. ER Diagram (per SERVICE) ─────────────────────────────────────────────
 
 def _mermaid_er_diagram(service_apis: List[dict]) -> str:
-    """Mermaid erDiagram combining all entities across a service."""
-    lines = ["```mermaid", "erDiagram"]
-    seen  = set()
+    """
+    Mermaid erDiagram combining all entities across a service.
+    Strict syntax: type fieldName "comment"
+    No nullable/not_null keywords — not supported by Mermaid erDiagram.
+    """
+    entity_lines = []
+    relation_lines = []
+    seen = set()
+
+    def clean_name(s: str) -> str:
+        """Entity/field names: alphanumeric + underscore only."""
+        return re.sub(r'[^a-zA-Z0-9_]', '_', s or "").strip('_') or "Unknown"
+
+    def clean_type(s: str) -> str:
+        """
+        Field type: single word, no generics, no special chars.
+        List<String> → List, Map<K,V> → Map, String? → String
+        """
+        s = (s or "String").split("<")[0].split("[")[0].split("|")[0].strip()
+        s = re.sub(r'[^a-zA-Z0-9_]', '', s)
+        return s or "String"
+
+    def clean_comment(desc: str, enum_vals: list) -> str:
+        """Short comment in double quotes — no quotes or newlines inside."""
+        if enum_vals:
+            raw = ", ".join(str(v) for v in enum_vals[:4])
+        elif desc:
+            raw = desc[:50]
+        else:
+            return ""
+        # Strip characters that break Mermaid comment parsing
+        raw = re.sub(r'["\n\r]', '', raw).strip()
+        return f' "{raw}"' if raw else ""
 
     for api in service_apis:
         entities = _safe_list((api.get("data_model") or {}).get("entities"))
         for ent in entities:
-            name = re.sub(r'[^a-zA-Z0-9_]', '_', ent.get("name", ""))
+            name = clean_name(ent.get("name", ""))
             if not name or name in seen:
                 continue
             seen.add(name)
 
             fields = _safe_list(ent.get("fields"))
-            lines.append(f"  {name} {{")
+            ent_block = [f"  {name} {{"]
             for f in fields:
-                fname     = re.sub(r'[^a-zA-Z0-9_]', '_', f.get("field", ""))
-                ftype     = (f.get("type") or "String").split("|")[0].split("<")[0].strip()
-                ftype     = re.sub(r'[^a-zA-Z0-9_]', '_', ftype) or "String"
-                nullable  = "nullable" if f.get("nullable", True) else "not_null"
-                enum_vals = _safe_str_list(f.get("enum_values"))
-                desc      = f.get("description", "")
-                comment   = f'"{", ".join(enum_vals[:3])}"' if enum_vals \
-                            else f'"{desc[:40]}"' if desc else '""'
-                lines.append(f"    {ftype} {fname} {nullable} {comment}")
-            lines.append("  }")
+                fname   = clean_name(f.get("field", ""))
+                ftype   = clean_type(f.get("type", "String"))
+                comment = clean_comment(
+                    f.get("description", ""),
+                    _safe_str_list(f.get("enum_values"))
+                )
+                if fname:
+                    ent_block.append(f"    {ftype} {fname}{comment}")
+            ent_block.append("  }")
+            entity_lines.extend(ent_block)
 
-        # Relationships
+        # Relationships — labels must be quoted in erDiagram
         for ent in entities:
-            name = re.sub(r'[^a-zA-Z0-9_]', '_', ent.get("name", ""))
+            name = clean_name(ent.get("name", ""))
             for rel in _safe_str_list(ent.get("relationships")):
                 m = re.match(
-                    r'(\w+)?\s*(hasMany|hasOne|extends|references|contains|belongsTo)\s+(\w+)',
-                    rel, re.IGNORECASE
+                    r'(\w[\w\s]*)?\s*(hasMany|hasOne|extends|references|contains|belongsTo)\s+([\w\s]+)',
+                    rel.strip(), re.IGNORECASE
                 )
-                if m:
-                    left  = m.group(1) or name
-                    rtype = m.group(2).lower()
-                    right = m.group(3)
-                    er_map = {
-                        "hasmany":    f"  {left} ||--o{{ {right} : has",
-                        "hasonone":   f"  {left} ||--|| {right} : has",
-                        "extends":    f"  {left} ||--|| {right} : extends",
-                        "references": f"  {left} }}o--|| {right} : references",
-                        "contains":   f"  {left} ||--|{{ {right} : contains",
-                        "belongsto":  f"  {left} }}o--|| {right} : belongs_to",
-                    }
-                    lines.append(er_map.get(rtype, f"  {left} }}o--o{{ {right} : relates"))
+                if not m:
+                    continue
+                left  = clean_name((m.group(1) or name).strip())
+                rtype = m.group(2).lower()
+                right = clean_name(m.group(3).strip())
+                er_map = {
+                    "hasmany":    f'  {left} ||--o{{ {right} : "has"',
+                    "hasonone":   f'  {left} ||--|| {right} : "has"',
+                    "extends":    f'  {left} ||--|| {right} : "extends"',
+                    "references": f'  {left} }}o--|| {right} : "references"',
+                    "contains":   f'  {left} ||--|{{ {right} : "contains"',
+                    "belongsto":  f'  {left} }}o--|| {right} : "belongs_to"',
+                }
+                line = er_map.get(rtype, f'  {left} }}o--o{{ {right} : "relates"')
+                if line not in relation_lines:
+                    relation_lines.append(line)
 
+    if not entity_lines and not relation_lines:
+        return ""
+
+    lines = ["```mermaid", "erDiagram", ""]
+    lines.extend(entity_lines)
+    if relation_lines:
+        lines.append("")
+        lines.extend(relation_lines)
     lines.append("```")
     return "\n".join(lines)
 
@@ -391,56 +432,32 @@ def _field_to_schema(f: dict) -> dict:
     return schema
 
 
-def _yaml_dump(obj, indent=0) -> str:
-    """Minimal YAML serializer — no external dependency needed."""
-    pad = "  " * indent
-    lines = []
+def _to_yaml(spec: dict) -> str:
+    """
+    Serialize OpenAPI spec to YAML.
+    Uses PyYAML (installed with anthropic) for correct output.
+    Falls back to JSON (valid YAML superset) if PyYAML unavailable.
+    """
+    try:
+        import yaml
 
-    if isinstance(obj, dict):
-        for k, v in obj.items():
-            if isinstance(v, (dict, list)) and v:
-                lines.append(f"{pad}{k}:")
-                lines.append(_yaml_dump(v, indent + 1))
-            elif v is None:
-                lines.append(f"{pad}{k}: null")
-            elif isinstance(v, bool):
-                lines.append(f"{pad}{k}: {'true' if v else 'false'}")
-            elif isinstance(v, (int, float)):
-                lines.append(f"{pad}{k}: {v}")
-            else:
-                safe = str(v).replace('"', '\\"')
-                if any(c in safe for c in [':', '#', '{', '}', '[', ']', ',', '&', '*', '?', '|', '-', '<', '>', '=', '!', '%', '@', '\\']):
-                    lines.append(f'{pad}{k}: "{safe}"')
-                else:
-                    lines.append(f"{pad}{k}: {safe}")
+        class _NoAliasDumper(yaml.Dumper):
+            """Prevents PyYAML from emitting anchors/aliases."""
+            def ignore_aliases(self, data):
+                return True
 
-    elif isinstance(obj, list):
-        for item in obj:
-            if isinstance(item, dict):
-                first = True
-                for k, v in item.items():
-                    prefix = f"{pad}- " if first else f"{pad}  "
-                    first  = False
-                    if isinstance(v, (dict, list)) and v:
-                        lines.append(f"{prefix}{k}:")
-                        lines.append(_yaml_dump(v, indent + 2))
-                    elif v is None:
-                        lines.append(f"{prefix}{k}: null")
-                    elif isinstance(v, bool):
-                        lines.append(f"{prefix}{k}: {'true' if v else 'false'}")
-                    elif isinstance(v, (int, float)):
-                        lines.append(f"{prefix}{k}: {v}")
-                    else:
-                        safe = str(v).replace('"', '\\"')
-                        if any(c in safe for c in [':', '#', '{', '}', '[', ']']):
-                            lines.append(f'{prefix}{k}: "{safe}"')
-                        else:
-                            lines.append(f"{prefix}{k}: {safe}")
-            else:
-                safe = str(item).replace('"', '\\"')
-                lines.append(f"{pad}- {safe}")
-
-    return "\n".join(lines)
+        return yaml.dump(
+            spec,
+            Dumper=_NoAliasDumper,
+            default_flow_style=False,
+            allow_unicode=True,
+            sort_keys=False,
+            indent=2,
+            width=120,
+        )
+    except ImportError:
+        # JSON is valid YAML — always works
+        return json.dumps(spec, indent=2, ensure_ascii=False)
 
 
 def _build_openapi(service: str, service_apis: List[dict]) -> dict:
@@ -587,8 +604,7 @@ def generate_swagger(cfg: Config, apis: List[dict]) -> None:
 
     for service, service_apis in by_service.items():
         spec    = _build_openapi(service, service_apis)
-        content = "# Auto-generated by Doctor — do not edit manually\n"
-        content += _yaml_dump(spec)
+        content = _to_yaml(spec)
 
         out_path = os.path.join(cfg.api_doc_dir, f"{service}_openapi.yaml")
         with open(out_path, "w") as f:
@@ -606,28 +622,40 @@ def run(cfg: Config) -> None:
         print("   ⚠️  No analysis files found — run Phase 2 first")
         return
 
+    skip = cfg.skip
     print(f"   Generating artifacts for {len(apis)} APIs...\n")
 
-    print("📮 Postman Collections")
-    generate_postman(cfg, apis)
+    if "postman" not in skip:
+        print("📮 Postman Collections")
+        generate_postman(cfg, apis)
+        print()
 
-    print("\n📐 Data Model Charts (per API)")
-    generate_data_model_charts(cfg, apis)
+    if "datamodel" not in skip:
+        print("📐 Data Model Charts (per API)")
+        generate_data_model_charts(cfg, apis)
+        print()
 
-    print("\n🗄️  ER Diagrams (per service)")
-    generate_er_diagrams(cfg, apis)
+    if "er" not in skip:
+        print("🗄️  ER Diagrams (per service)")
+        generate_er_diagrams(cfg, apis)
+        print()
 
-    print("\n📄 OpenAPI / Swagger YAML (per service)")
-    generate_swagger(cfg, apis)
+    if "swagger" not in skip:
+        print("📄 OpenAPI / Swagger YAML (per service)")
+        generate_swagger(cfg, apis)
+        print()
 
-    print(f"""
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-✅ Artifacts complete!
-   output/
-   ├── documents/            ← API markdown docs
-   ├── data_model/           ← Mermaid class diagrams (per API)
-   ├── db_entity_relations/  ← Mermaid ER diagrams (per service)
-   ├── postman_collection/   ← Postman collections (per service)
-   └── api_document/         ← OpenAPI 3.0 YAML (per service)
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-""")
+    active = [k for k in ["postman","datamodel","er","swagger"] if k not in skip]
+    skipped = [k for k in ["postman","datamodel","er","swagger"] if k in skip]
+
+    print("━" * 50)
+    print("✅ Artifacts complete!")
+    print("   output/")
+    if "documents" not in skip: print("   ├── documents/            ← API docs (markdown)")
+    if "datamodel" not in skip: print("   ├── data_model/           ← class diagrams")
+    if "er"        not in skip: print("   ├── db_entity_relations/  ← ER diagrams")
+    if "postman"   not in skip: print("   ├── postman_collection/   ← Postman collections")
+    if "swagger"   not in skip: print("   └── api_document/         ← OpenAPI YAML")
+    if skipped:
+        print(f"   ⏭  Skipped: {', '.join(skipped)}")
+    print("━" * 50)

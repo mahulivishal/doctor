@@ -30,6 +30,7 @@ echo ""
 echo "── Tools ──────────────────────────────────────"
 check "Claude Code installed (claude)" "command -v claude"
 check "Python 3 available"             "command -v python3"
+check "anthropic Python package"       "python3 -c 'import anthropic'"
 check "git available"                  "command -v git"
 check "jq available (optional)"        "command -v jq"
 echo ""
@@ -84,6 +85,7 @@ else
   echo "  Claude Code not installed → npm install -g @anthropic-ai/claude-code"
   echo "  Not authenticated        → claude auth login"
   echo "  jq not installed         → brew install jq  (or apt install jq)"
+  echo "  anthropic not installed → pip3 install anthropic"
   exit 1
 fi
 echo ""
