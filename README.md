@@ -26,7 +26,6 @@ In addition, Doctor generates the following artifacts per service:
 | **ER Diagram** | `output/db_entity_relations/<service>_er_diagram.md` | Mermaid `erDiagram` — combined DB schema per service |
 | **Postman Collection** | `output/postman_collection/<service>.postman_collection.json` | Ready-to-import Postman collection |
 | **OpenAPI Spec** | `output/api_document/<service>_openapi.yaml` | OpenAPI 3.0.3 YAML for any developer portal |
-| **Master Index** | `output/README.md` | Table of all APIs with blast radius summary |
 
 > **Visualising diagrams:** Open `.md` files in VS Code with the [Mermaid Preview](https://marketplace.visualstudio.com/items?itemName=bierner.markdown-mermaid) extension (`Cmd+Shift+V`), push to GitHub (renders natively), or paste into [mermaid.live](https://mermaid.live).
 
