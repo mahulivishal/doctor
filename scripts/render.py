@@ -182,6 +182,39 @@ def render(data: dict) -> str:
                 for e in errors]
         a(_table(["Status","Error Code","Description","Trigger Condition"], rows))
 
+    # ── Data Model ───────────────────────────────────────────────────────
+    a("## Data Model")
+    if dm.get("description"):
+        a(f"_{dm['description']}_\n")
+    entities = _safe_list(dm.get("entities"))
+    if entities:
+        for ent in entities:
+            ent_type = f" _{ent.get('type','')}_" if ent.get("type") else ""
+            a(f"### `{ent.get('name','')}`{ent_type}")
+            if ent.get("description"):
+                a(f"{ent['description']}\n")
+            if ent.get("storage"):
+                a(f"**Storage:** `{ent.get('storage','')}` — `{ent.get('location','')}`\n")
+            fields = _safe_list(ent.get("fields"))
+            if fields:
+                rows = []
+                for f in fields:
+                    enum_vals = _safe_str_list(f.get("enum_values"))
+                    enum_str  = ", ".join(f"`{v}`" for v in enum_vals) if enum_vals else ""
+                    constraints = f.get("constraints","")
+                    combined = " | ".join(filter(None, [constraints, enum_str]))
+                    rows.append([
+                        f.get("field",""), f.get("type",""),
+                        "✓" if not f.get("nullable", True) else "",
+                        f.get("description",""), combined
+                    ])
+                a(_table(["Field","Type","Not Null","Description","Constraints / Enum Values"], rows))
+            rels = _safe_str_list(ent.get("relationships"))
+            if rels:
+                a("**Relationships:** " + ", ".join(f"`{r}`" for r in rels) + "\n")
+    else:
+        a("_No entity data captured._\n")
+
     # ── Functional Mapping ───────────────────────────────────────────────
     req_fields  = _safe_list(fm.get("request_fields"))
     resp_fields = _safe_list(fm.get("response_fields"))
@@ -241,39 +274,31 @@ def render(data: dict) -> str:
             for f in fx: a(f"- {f}")
         a("")
 
-    # ── Implementation Detail ─────────────────────────────────────────────
-    a("## Implementation Detail")
-    a(f"**Handler:** `{im.get('handler_file','')}` → `{im.get('handler_function','')}`  ")
-    a(f"**Auth:** `{im.get('auth_mechanism','None')}`  ")
-    mc = _safe_str_list(im.get("middleware_chain"))
-    if mc:
-        a("**Middleware:** " + " → ".join(f"`{m}`" for m in mc))
-    a("")
+    # ── Implementation Details ────────────────────────────────────────────
+    a("## Implementation Details")
 
-    ec = _safe_list(im.get("external_calls"))
-    if ec:
-        a("### External Calls")
-        rows = [[c.get("target",""), c.get("protocol",""), c.get("operation",""),
-                 str(c.get("timeout_ms","—")), c.get("retry_policy","—")]
-                for c in ec]
-        a(_table(["Target","Protocol","Operation","Timeout (ms)","Retry Policy"], rows))
+    handler = im.get("handler", "") or \
+              f"{im.get('handler_file','')} → {im.get('handler_function','')}"
+    if handler.strip(" →"):
+        a(f"**Handler:** `{handler}`\n")
 
-    cache = im.get("caching") or {}
-    if isinstance(cache, dict) and cache.get("enabled"):
-        a("### Caching")
-        a(f"**Strategy:** `{cache.get('strategy','')}` | "
-          f"**TTL:** `{cache.get('ttl_seconds','')}s` | "
-          f"**Key:** `{cache.get('cache_key_pattern','')}`\n")
+    flow = im.get("flow", "")
+    if flow:
+        a(flow)
+        a("")
 
-    if im.get("validation_logic"):
-        a(f"### Validation\n{im['validation_logic']}\n")
-    if im.get("notable_logic"):
-        a(f"### Notable Logic\n{im['notable_logic']}\n")
+    key_points = _safe_str_list(im.get("key_points"))
+    if key_points:
+        for point in key_points:
+            if point.strip():
+                a(f"- {point}")
+        a("")
 
     ambig = _safe_str_list(im.get("ambiguity_notes"))
     if ambig:
         a("### ⚠️ Ambiguities (Needs Manual Review)")
-        for note in ambig: a(f"- {note}")
+        for note in ambig:
+            a(f"- {note}")
         a("")
 
     return "\n".join(lines)
