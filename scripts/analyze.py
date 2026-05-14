@@ -8,6 +8,9 @@ import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Optional
 from config import Config
+import anthropic
+from token_tracker import tracker
+import subprocess
 
 REQUIRED_KEYS = [
     "api_id", "service", "method", "path",
@@ -257,9 +260,6 @@ def _is_valid_cached(path: str) -> bool:
 
 def analyze_endpoint(cfg: Config, ep: dict, max_retries: int = 3) -> bool:
     """Analyze one endpoint using Anthropic SDK. Returns True on success."""
-    import anthropic
-    from token_tracker import tracker
-
     api_id     = ep.get("id", "")
     method     = ep.get("method", "")
     ep_path    = ep.get("path", "")
@@ -285,35 +285,45 @@ def analyze_endpoint(cfg: Config, ep: dict, max_retries: int = 3) -> bool:
         ep_path=ep_path, handler=handler, handler_fn=handler_fn, auth=auth,
     )
 
-    client = anthropic.Anthropic(api_key=cfg.api_key)
-
     for attempt in range(1, max_retries + 1):
         if attempt > 1:
             print(f"      ↻  [{svc_name}] {api_id} retry {attempt}/{max_retries}")
+            output = ""
         try:
-            response = client.messages.create(
-                model=cfg.claude_model,
-                max_tokens=8096,
-                tools=[
-                    {"name": "Read", "description": "Read a file from disk",
-                     "input_schema": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}},
-                    {"name": "Glob", "description": "List files matching a pattern",
-                     "input_schema": {"type": "object", "properties": {"pattern": {"type": "string"}}, "required": ["pattern"]}},
-                    {"name": "Grep", "description": "Search for a pattern in files",
-                     "input_schema": {"type": "object", "properties": {"pattern": {"type": "string"}, "path": {"type": "string"}}, "required": ["pattern"]}},
-                ],
-                messages=[{"role": "user", "content": prompt}],
-            )
+            if cfg.api_key:
+                client = anthropic.Anthropic(api_key=cfg.api_key)
+                response = client.messages.create(
+                    model=cfg.claude_model,
+                    max_tokens=8096,
+                    tools=[
+                        {"name": "Read", "description": "Read a file from disk",
+                        "input_schema": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}},
+                        {"name": "Glob", "description": "List files matching a pattern",
+                        "input_schema": {"type": "object", "properties": {"pattern": {"type": "string"}}, "required": ["pattern"]}},
+                        {"name": "Grep", "description": "Search for a pattern in files",
+                        "input_schema": {"type": "object", "properties": {"pattern": {"type": "string"}, "path": {"type": "string"}}, "required": ["pattern"]}},
+                    ],
+                    messages=[{"role": "user", "content": prompt}],
+                )
 
-            tracker.add(
-                response.usage.input_tokens,
-                response.usage.output_tokens,
-            )
+                tracker.add(
+                    response.usage.input_tokens,
+                    response.usage.output_tokens,
+                )
 
-            output = "".join(
-                block.text for block in response.content
-                if hasattr(block, "text")
-            )
+                output = "".join(
+                    block.text for block in response.content
+                    if hasattr(block, "text")
+                )
+            else:
+                result = subprocess.run(
+                    [cfg.claude_bin, "-p", prompt,
+                     "--allowedTools", "Read,Glob,Grep"],
+                    capture_output=True,
+                    text=True,
+                    cwd=svc_path,
+                )
+                output = result.stdout + result.stderr
 
         except anthropic.APIError as e:
             print(f"      ⚠️  Attempt {attempt}: API error — {e}")
