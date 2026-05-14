@@ -8,8 +8,6 @@ import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Optional
 from config import Config
-import subprocess
-
 
 REQUIRED_KEYS = [
     "api_id", "service", "method", "path",
@@ -206,30 +204,20 @@ CRITICAL RULES
   }},
 
   "implementation_detail": {{
-    "handler_file": "{handler}",
-    "handler_function": "{handler_fn}",
-    "middleware_chain": ["list in order of execution"],
-    "auth_mechanism": "exact mechanism from source code",
-    "rate_limiting": null,
-    "caching": {{
-      "enabled": false,
-      "strategy": "describe the caching approach if any",
-      "ttl_seconds": null,
-      "cache_key_pattern": "exact pattern from source"
-    }},
-    "external_calls": [
-      {{
-        "target": "",
-        "protocol": "HTTP|Redis|SQL|gRPC|Pub/Sub|Kafka",
-        "operation": "what exactly is done — publish, get, set, query",
-        "timeout_ms": null,
-        "retry_policy": null
-      }}
+    "handler": "{handler} → {handler_fn}",
+    "flow": "Write 3-5 sentences explaining the end-to-end request lifecycle in plain English. Start from when the request arrives (auth/middleware), through validation, business logic, external calls, and how the response is built. Explain WHY things happen, not just WHAT — e.g. why a cache is checked first, why a particular service is called, what triggers an event.",
+    "key_points": [
+      "Authentication & authorisation: explain the mechanism and what it guards against",
+      "Input validation: what is validated, in what order, and what happens on failure",
+      "Core business logic: the most important thing this endpoint actually does",
+      "External dependencies: each service/DB/cache called, why, and what happens if it fails",
+      "Caching: strategy, key pattern, TTL, and when cache is bypassed",
+      "Side effects: events published, caches invalidated, notifications sent — and when",
+      "Edge cases & gotchas: non-obvious behaviour an implementer must know",
+      "Performance considerations: any timeouts, retries, or concurrency concerns"
     ],
-    "validation_logic": "describe ALL validation — bean validation annotations, custom validators, order of execution",
-    "notable_logic": "non-obvious business logic, gotchas, edge cases — be specific",
     "ambiguity_notes": [
-      "list anything that cannot be verified from source — shared libs, external config, inferred behaviour"
+      "Anything that cannot be confirmed from source alone — shared libs, external config, inferred behaviour"
     ]
   }}
 }}\
@@ -302,41 +290,33 @@ def analyze_endpoint(cfg: Config, ep: dict, max_retries: int = 3) -> bool:
     for attempt in range(1, max_retries + 1):
         if attempt > 1:
             print(f"      ↻  [{svc_name}] {api_id} retry {attempt}/{max_retries}")
-        
         try:
-            if cfg.api_key:
-                import anthropic
-                client = anthropic.Anthropic(api_key=cfg.api_key)
-                response = client.messages.create(
-                    model=cfg.claude_model,
-                    max_tokens=8096,
-                    tools=[
-                        {"name": "Read", "description": "Read a file from disk",
-                         "input_schema": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}},
-                        {"name": "Glob", "description": "List files matching a pattern",
-                         "input_schema": {"type": "object", "properties": {"pattern": {"type": "string"}}, "required": ["pattern"]}},
-                        {"name": "Grep", "description": "Search for a pattern in files",
-                         "input_schema": {"type": "object", "properties": {"pattern": {"type": "string"}, "path": {"type": "string"}}, "required": ["pattern"]}},
-                    ],
-                    messages=[{"role": "user", "content": prompt}],
-                )
-                tracker.add(response.usage.input_tokens, response.usage.output_tokens)
-                output = "".join(
-                    block.text for block in response.content
-                    if hasattr(block, "text")
-                )
-            else:
-                result = subprocess.run(
-                    [cfg.claude_bin, "-p", prompt,
-                     "--allowedTools", "Read,Glob,Grep"],
-                    capture_output=True,
-                    text=True,
-                    cwd=svc_path,
-                )
-                output = result.stdout + result.stderr
+            response = client.messages.create(
+                model=cfg.claude_model,
+                max_tokens=8096,
+                tools=[
+                    {"name": "Read", "description": "Read a file from disk",
+                     "input_schema": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}},
+                    {"name": "Glob", "description": "List files matching a pattern",
+                     "input_schema": {"type": "object", "properties": {"pattern": {"type": "string"}}, "required": ["pattern"]}},
+                    {"name": "Grep", "description": "Search for a pattern in files",
+                     "input_schema": {"type": "object", "properties": {"pattern": {"type": "string"}, "path": {"type": "string"}}, "required": ["pattern"]}},
+                ],
+                messages=[{"role": "user", "content": prompt}],
+            )
 
-        except Exception as e:
-            print(f"      ⚠️  Attempt {attempt}: error — {e}")
+            tracker.add(
+                response.usage.input_tokens,
+                response.usage.output_tokens,
+            )
+
+            output = "".join(
+                block.text for block in response.content
+                if hasattr(block, "text")
+            )
+
+        except anthropic.APIError as e:
+            print(f"      ⚠️  Attempt {attempt}: API error — {e}")
             continue
 
         data = _parse_output(output)

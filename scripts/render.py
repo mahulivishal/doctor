@@ -241,39 +241,31 @@ def render(data: dict) -> str:
             for f in fx: a(f"- {f}")
         a("")
 
-    # ── Implementation Detail ─────────────────────────────────────────────
-    a("## Implementation Detail")
-    a(f"**Handler:** `{im.get('handler_file','')}` → `{im.get('handler_function','')}`  ")
-    a(f"**Auth:** `{im.get('auth_mechanism','None')}`  ")
-    mc = _safe_str_list(im.get("middleware_chain"))
-    if mc:
-        a("**Middleware:** " + " → ".join(f"`{m}`" for m in mc))
-    a("")
+    # ── Implementation Details ────────────────────────────────────────────
+    a("## Implementation Details")
 
-    ec = _safe_list(im.get("external_calls"))
-    if ec:
-        a("### External Calls")
-        rows = [[c.get("target",""), c.get("protocol",""), c.get("operation",""),
-                 str(c.get("timeout_ms","—")), c.get("retry_policy","—")]
-                for c in ec]
-        a(_table(["Target","Protocol","Operation","Timeout (ms)","Retry Policy"], rows))
+    handler = im.get("handler", "") or \
+              f"{im.get('handler_file','')} → {im.get('handler_function','')}"
+    if handler.strip(" →"):
+        a(f"**Handler:** `{handler}`\n")
 
-    cache = im.get("caching") or {}
-    if isinstance(cache, dict) and cache.get("enabled"):
-        a("### Caching")
-        a(f"**Strategy:** `{cache.get('strategy','')}` | "
-          f"**TTL:** `{cache.get('ttl_seconds','')}s` | "
-          f"**Key:** `{cache.get('cache_key_pattern','')}`\n")
+    flow = im.get("flow", "")
+    if flow:
+        a(flow)
+        a("")
 
-    if im.get("validation_logic"):
-        a(f"### Validation\n{im['validation_logic']}\n")
-    if im.get("notable_logic"):
-        a(f"### Notable Logic\n{im['notable_logic']}\n")
+    key_points = _safe_str_list(im.get("key_points"))
+    if key_points:
+        for point in key_points:
+            if point.strip():
+                a(f"- {point}")
+        a("")
 
     ambig = _safe_str_list(im.get("ambiguity_notes"))
     if ambig:
         a("### ⚠️ Ambiguities (Needs Manual Review)")
-        for note in ambig: a(f"- {note}")
+        for note in ambig:
+            a(f"- {note}")
         a("")
 
     return "\n".join(lines)
