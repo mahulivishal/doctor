@@ -1,0 +1,24 @@
+version: "3.9"
+
+services:
+  doctor:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - DOCTOR_API_KEY=${DOCTOR_API_KEY}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - MAX_CONCURRENT_RUNS=10
+    volumes:
+      - doctor-workspace:/app/workspace
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  doctor-workspace:

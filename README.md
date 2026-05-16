@@ -4,30 +4,40 @@
 
 ---
 
+## Three ways to run Doctor
+
+| Mode | How | Best for |
+|---|---|---|
+| **Terminal** | `bash run.sh` | Local development, one-off runs |
+| **API** | `POST /run` | CI/CD — GitHub Actions, GitLab CI, Azure Pipelines |
+| **SKILL** | Claude Code reads `SKILL.md` | Autonomous AI-driven documentation |
+
+All three modes run the same pipeline. Only config loading differs.
+
+---
+
 ## What it produces
 
-For every targeted HTTP endpoint, Doctor generates a comprehensive markdown document containing:
+For every targeted HTTP endpoint:
 
 | Section | What it contains |
 |---|---|
-| **Overview** | Precise summary, business purpose, system context, integration notes |
-| **Request** | Every header, path param, query param, and body field — fully expanded with types, validation constraints, enum values, and nested objects |
-| **Response** | Success response fields with examples, all error codes with exact trigger conditions |
-| **Field Transformations** | Field-level transformations applied by the endpoint — omitted if fields pass through unchanged |
-| **Blast Radius** | Severity (HIGH/MEDIUM/LOW), downstream consumers, upstream dependencies, data mutation and side effects |
-| **Implementation Detail** | Handler, middleware chain, auth mechanism, caching strategy, external calls, validation logic, notable logic, ambiguities |
+| **Overview** | Summary, business purpose, context, integration notes |
+| **Request** | Every field fully expanded — types, validation, enum values, nested objects |
+| **Response** | Fields, error codes with exact trigger conditions |
+| **Field Transformations** | Only populated when actual transformations exist |
+| **Blast Radius** | Severity, downstream consumers, upstream dependencies, side effects |
+| **Implementation Details** | End-to-end narrative + explanatory bullet points |
 
-In addition, Doctor generates the following artifacts per service:
+Plus per-service artifacts:
 
-| Artifact | Location | Description |
-|---|---|---|
-| **API Document** | `output/documents/<api_id>.md` | Full markdown doc per endpoint |
-| **Data Model Chart** | `output/data_model/<api_id>_datamodel.md` | Mermaid `classDiagram` per endpoint |
-| **ER Diagram** | `output/db_entity_relations/<service>_er_diagram.md` | Mermaid `erDiagram` — combined DB schema per service |
-| **Postman Collection** | `output/postman_collection/<service>.postman_collection.json` | Ready-to-import Postman collection |
-| **OpenAPI Spec** | `output/api_document/<service>_openapi.yaml` | OpenAPI 3.0.3 YAML for any developer portal |
-
-> **Visualising diagrams:** Open `.md` files in VS Code with the [Mermaid Preview](https://marketplace.visualstudio.com/items?itemName=bierner.markdown-mermaid) extension (`Cmd+Shift+V`), push to GitHub (renders natively), or paste into [mermaid.live](https://mermaid.live).
+| Artifact | Location |
+|---|---|
+| API markdown docs | `output/documents/<api_id>.md` |
+| Mermaid class diagrams | `output/data_model/<api_id>_datamodel.md` |
+| ER diagram (per service) | `output/db_entity_relations/<service>_er_diagram.md` |
+| Postman collection | `output/postman_collection/<service>.postman_collection.json` |
+| OpenAPI 3.0 YAML | `output/api_document/<service>_openapi.yaml` |
 
 ---
 
@@ -35,239 +45,260 @@ In addition, Doctor generates the following artifacts per service:
 
 ```
 doctor/
-│
-├── run.sh                          # Entry point — delegates to pipeline.py
-├── setup.sh                        # One-time workbench setup
-├── validate.sh                     # Pre-flight checks
-├── SKILL.md                        # Claude Code skill — enables autonomous usage
-├── CLAUDE.md                       # Agent instructions (auto-loaded by Claude Code)
-│
-├── .env                            # Your config (never commit this)
-├── .env.template                   # Template to copy from
-├── .gitignore                      # Ignores .env, workspace/, output/
-│
-├── .github/
-│   └── copilot-instructions.md     # GitHub Copilot skill for Doctor contributors
-│
-├── config/
-│   ├── repos.yaml                  # Repo + service path definitions (monorepo support)
-│   ├── target-endpoints.yaml       # Endpoint whitelist (empty = document all)
-│   └── .claudeignore               # Files Claude should never read
-│
-├── scripts/
-│   ├── pipeline.py                 # Master orchestrator — 6 phases
-│   ├── config.py                   # Central config loader
-│   ├── token_tracker.py            # Thread-safe token usage accumulator
-│   ├── discover.py                 # Phase 2: Discover endpoints per service
-│   ├── analyze.py                  # Phase 3: Deep-analyze each endpoint (parallel)
-│   ├── render.py                   # Phase 4: JSON → Markdown (parallel, no Claude)
-│   ├── artifacts.py                # Phase 5: Postman, Mermaid, ER, OpenAPI (no Claude)
-│   ├── assemble.py                 # Phase 6: Master index
-│   └── 1-clone-repo.sh             # Phase 1: Git clone (bash)
-│
-├── workspace/                      # Intermediate files (safe to delete)
-│   ├── repos/<service>/            # Cloned or extracted repo
-│   ├── manifests/                  # Discovered endpoint manifests
-│   └── analysis/                   # Raw Claude analysis JSON per endpoint
-│
-└── output/
-    ├── documents/
-    │   └── <api_id>.md             # One comprehensive doc per endpoint
-    ├── data_model/
-    │   └── <api_id>_datamodel.md   # Mermaid class diagram per endpoint
-    ├── db_entity_relations/
-    │   └── <service>_er_diagram.md # Mermaid ER diagram per service
-    ├── postman_collection/
-    │   └── <service>.postman_collection.json
-    └── api_document/
-        └── <service>_openapi.yaml  # OpenAPI 3.0.3 spec per service
+|
++-- run.sh                          # Terminal entry point
++-- setup.sh                        # One-time setup
++-- validate.sh                     # Pre-flight checks
++-- SKILL.md                        # Claude Code skill
++-- CLAUDE.md                       # Agent instructions
++-- requirements.txt                # Python dependencies
++-- .env                            # Your config (never commit)
++-- .env.template                   # Template to copy from
+|
++-- config/
+|   +-- repos.yaml
+|   +-- target-endpoints.yaml
+|   +-- .claudeignore
+|
++-- scripts/
+|   +-- pipeline.py                 # Master orchestrator (all 3 modes)
+|   +-- config.py                   # Config loader: load() and load_from_dict()
+|   +-- token_tracker.py            # Token usage accumulator
+|   +-- clone.py                    # VCS-agnostic cloning + PR branch creation
+|   +-- discover.py                 # Phase 2: endpoint discovery
+|   +-- analyze.py                  # Phase 3: deep analysis (parallel)
+|   +-- render.py                   # Phase 4: JSON to Markdown
+|   +-- artifacts.py                # Phase 5: Postman, Mermaid, ER, OpenAPI
+|   +-- pr.py                       # PR creation via httpx (no VCS SDK)
+|   +-- server.py                   # FastAPI server (API mode)
+|   +-- run_manager.py              # Concurrent run tracking
+|
++-- docker/
+|   +-- Dockerfile
+|   +-- docker-compose.yml
+|   +-- k8s/
+|       +-- deployment.yaml
+|       +-- service-hpa.yaml
+|
++-- workspace/
+    +-- runs/
+        +-- <run_id>/               # Isolated workspace per run
+            +-- repos/
+            +-- manifests/
+            +-- analysis/
+            +-- output/
+                +-- documents/
+                +-- data_model/
+                +-- db_entity_relations/
+                +-- postman_collection/
+                +-- api_document/
 ```
 
 ---
 
-## Quickstart
+## Terminal mode
 
+### Setup
 ```bash
-# 1. Clone Doctor
 git clone https://github.com/mahulivishal/doctor.git
 cd doctor
-
-# 2. One-time setup
+pip install -r requirements.txt
 bash setup.sh
-
-# 3. Authenticate Claude Code
 claude auth login
-
-# 4. Configure
-cp .env.template .env
-# Edit .env with your repo URL, credentials, and model preference
-
-# 5. Verify
-bash validate.sh
-
-# 6. Run
-bash run.sh
 ```
 
----
-
-## Configuration
-
-### `.env`
-
+### Configure
 ```bash
-# Repo
-SERVICE=my-service
-BRANCH=main
-REPO=https://your-token@github.com/your-org/your-repo.git
-
-# Monorepo — set true if repo has multiple services in subdirectories
-IS_MONOREPO=false
-
-# Claude model — leave empty to use Claude Code default
-CLAUDE_MODEL=
-
-# Token tracking — optional, enables token usage reporting
-# Get your key at: https://console.anthropic.com/settings/keys
-ANTHROPIC_API_KEY=
-
-# Parallel workers
-PARALLEL_WORKERS=4
+cp .env
+# Edit .env: SERVICE, REPO, VCS_PROVIDER, token
 ```
 
-### `config/repos.yaml`
-
-**Single repo:**
-```yaml
-repo:
-  name: my-service
-  api_paths:
-    - src/main/java
-    - src/main/kotlin
-```
-
-**Monorepo (set `IS_MONOREPO=true`):**
-```yaml
-repo:
-  services:
-    - name: auth-service
-      path: services/auth-service
-    - name: order-service
-      path: services/order-service
-```
-
-### `config/target-endpoints.yaml`
-
-```yaml
-# Leave empty [] to document ALL endpoints
-target_endpoints:
-  - path: "/api/v1/orders"
-    method: POST
-    acl_priority: HIGH
-    label: "Create Order"
-    # service_name: order-service  # only needed for monorepos
-```
-
----
-
-## Running
-
+### Run
 ```bash
-# Full reset + run
-bash run.sh
-
-# Resume from a specific phase
-bash run.sh --from 3      # re-run analysis onwards
-bash run.sh --from 4      # re-render docs only
-bash run.sh --from 5      # regenerate artifacts only
-
-# Run only one phase
-bash run.sh --only 2      # discovery only
-
-# Single endpoint
-bash run.sh --api <api_id>
-
-# Skip specific output artifacts
-bash run.sh --skip postman
-bash run.sh --skip swagger
-bash run.sh --skip er
-bash run.sh --skip datamodel
-bash run.sh --skip docs
-bash run.sh --skip postman --skip swagger   # multiple
-
-# Skip reset
-bash run.sh --no-reset
+bash run.sh                            # full run
+bash run.sh --from 3                   # resume from analysis
+bash run.sh --from 5                   # regenerate artifacts only
+bash run.sh --only 2                   # discovery only
+bash run.sh --api <api_id>             # single endpoint
+bash run.sh --raise-pr                 # generate and raise PR
+bash run.sh --skip postman             # skip an artifact
+bash run.sh --skip swagger --skip er   # skip multiple
+bash run.sh --run-id <id>              # resume existing run workspace
 ```
 
 ---
 
-## Using a local zip instead of cloning
+## API mode
 
+### Start the server
 ```bash
-unzip your-repo.zip -d workspace/repos/your-service-name
-bash run.sh --from 2
+# Local
+uvicorn scripts.server:app --host 0.0.0.0 --port 8000
+
+# Docker
+docker-compose -f docker/docker-compose.yml up
+
+# Kubernetes
+kubectl apply -f docker/k8s/
+```
+
+### Endpoints
+
+| Method | Path | Description |
+|---|---|---|
+| GET | /health | Liveness check (no auth) |
+| POST | /run | Start a run, returns run_id immediately (202) |
+| GET | /run/{run_id} | Poll status and progress |
+| GET | /run/{run_id}/output | Download output as zip |
+| POST | /run/{run_id}/pr | Manually raise PR for completed run |
+| DELETE | /run/{run_id} | Delete run state |
+| GET | /runs | List all runs |
+
+All endpoints except /health require: `X-Doctor-Key: your-api-key`
+
+### Trigger from CI/CD (same call works everywhere)
+```bash
+curl -X POST https://doctor.yourserver.com/run \
+  -H "X-Doctor-Key: $DOCTOR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "service":          "my-service",
+    "repo":             "https://github.com/org/my-service.git",
+    "branch":           "main",
+    "vcs_provider":     "github",
+    "vcs_token":        "ghp_...",
+    "parallel_workers": 4,
+    "target_endpoints": [
+      {"path": "/api/v1/orders", "method": "POST", "label": "Create Order"}
+    ],
+    "raise_pr": true
+  }'
+```
+
+### Poll for completion
+```bash
+curl https://doctor.yourserver.com/run/<run_id> \
+  -H "X-Doctor-Key: $DOCTOR_API_KEY"
+```
+```json
+{
+  "run_id":          "a3f9b2",
+  "status":          "running",
+  "current_phase":   3,
+  "phase_label":     "Analyzing endpoints",
+  "endpoints_total": 8,
+  "endpoints_done":  3,
+  "pr_url":          null,
+  "elapsed_seconds": 142.3
+}
 ```
 
 ---
 
-## Token tracking
-
-If `ANTHROPIC_API_KEY` is set in `.env`, Doctor uses the Anthropic SDK directly and prints a token summary after every run:
-
-```
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-📊 Token Usage
-   API calls:     9
-   Input tokens:  142,831
-   Output tokens: 18,204
-   Total tokens:  161,035
-
-   Rate limit window (per minute):
-   Remaining: 58,204 tokens  (29.1% available)
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-```
-
-Without an API key, Doctor falls back to `claude -p` via Claude Code and token tracking is disabled.
-
----
-
-## Supported languages and frameworks
-
-| Language | Frameworks |
-|---|---|
-| Java | Spring Boot (`@GetMapping`, `@PostMapping`, `@RequestMapping`) |
-| Kotlin | Spring Boot (same annotations) |
-| Python | FastAPI, Flask |
-| Go | Gin, Echo, Chi, Fiber, net/http |
-| TypeScript / JavaScript | Express, NestJS |
-
----
-
-## Pipeline phases
-
-| Phase | Script | Claude calls | Description |
-|---|---|---|---|
-| 1 | `1-clone-repo.sh` | 0 | Shallow clone + strip noise |
-| 2 | `discover.py` | 1 per service | Find all endpoints |
-| 3 | `analyze.py` | 1 per endpoint | Deep analysis (parallel) |
-| 4 | `render.py` | 0 | JSON → Markdown |
-| 5 | `artifacts.py` | 0 | Postman, Mermaid, ER, OpenAPI |
-| 6 | `assemble.py` | 0 | Master index |
-
----
-
-## Using with Claude Code
-
-Open Claude Code inside the `doctor/` directory and describe what you want:
+## SKILL mode (Claude Code)
 
 ```bash
 cd doctor
 claude
 ```
 
-> *"Document the APIs in https://github.com/my-org/my-service.git"*
+Tell Claude what you want:
+- "Document the APIs in https://github.com/org/my-service.git"
+- "Generate an OpenAPI spec for the accounting service"
+- "Document these 4 endpoints and raise a PR"
 
-Claude reads `SKILL.md` and handles the entire workflow autonomously.
+Claude reads SKILL.md and runs the pipeline autonomously.
+
+---
+
+## VCS providers
+
+| Provider | .env token key | Notes |
+|---|---|---|
+| GitHub | GITHUB_TOKEN | Personal access token |
+| GitLab cloud | GITLAB_TOKEN | glpat-... token |
+| GitLab self-hosted | GITLAB_TOKEN + VCS_BASE_URL | Set VCS_BASE_URL to your instance |
+| Azure Repos | AZURE_TOKEN | Personal access token |
+| Bitbucket | BITBUCKET_TOKEN | Repository access token |
+
+### Self-hosted GitLab example
+```bash
+VCS_PROVIDER=gitlab
+GITLAB_TOKEN=glpat-...
+VCS_BASE_URL=https://git.your-company.com
+REPO=https://git.your-company.com/org/repo.git
+```
+
+---
+
+## Pull Requests
+
+After generating documentation, Doctor can raise a PR back to the source repo.
+
+Branch name: `doctor/<service>-<YYYY-MM-DD>-<run_id>`
+Output location in repo: `docs/doctor/<service>/`
+
+```bash
+# Terminal
+bash run.sh --raise-pr
+
+# .env
+RAISE_PR=true
+
+# API request body
+{"raise_pr": true}
+```
+
+PR is only raised if Phase 1 (clone) ran in the current run.
+
+---
+
+## Run isolation
+
+Every run gets a unique run_id and isolated workspace under `workspace/runs/<run_id>/`.
+Multiple runs coexist without interfering. Terminal run_id defaults to a timestamp.
+
+---
+
+## Configuration reference
+
+| Field | Default | Description |
+|---|---|---|
+| SERVICE | required | Service name |
+| REPO | required | Clone URL |
+| BRANCH | main | Branch to clone |
+| VCS_PROVIDER | github | github / gitlab / azure / bitbucket |
+| GITHUB_TOKEN | | GitHub personal access token |
+| GITLAB_TOKEN | | GitLab personal access token |
+| AZURE_TOKEN | | Azure DevOps token |
+| BITBUCKET_TOKEN | | Bitbucket token |
+| VCS_BASE_URL | | Self-hosted VCS base URL |
+| IS_MONOREPO | false | Multi-service repo |
+| CLAUDE_MODEL | | Leave empty for default |
+| ANTHROPIC_API_KEY | | Optional, enables token tracking |
+| PARALLEL_WORKERS | 4 | Endpoints analyzed simultaneously |
+| RAISE_PR | false | Auto-raise PR after generation |
+| PR_BASE_BRANCH | BRANCH | Target branch for PR |
+| DOCTOR_API_KEY | | Server mode API auth key |
+
+---
+
+## Pipeline phases
+
+| Phase | Description | Claude calls |
+|---|---|---|
+| 1 | Clone repo via VCS provider | 0 |
+| 2 | Discover all endpoints | 1 per service |
+| 3 | Deep-analyze each endpoint (parallel) | 1 per endpoint |
+| 4 | Render markdown docs | 0 |
+| 5 | Generate Postman, Mermaid, ER, OpenAPI | 0 |
+| PR | Commit output + raise PR | 0 |
+
+---
+
+## Supported languages and frameworks
+
+Java/Kotlin (Spring Boot), Python (FastAPI, Flask), Go (Gin, Echo, Chi, Fiber, net/http), TypeScript/JavaScript (Express, NestJS)
 
 ---
 
@@ -275,10 +306,9 @@ Claude reads `SKILL.md` and handles the entire workflow autonomously.
 
 | Symptom | Fix |
 |---|---|
-| `claude: command not found` | `npm install -g @anthropic-ai/claude-code` |
-| Auth error | `claude auth login` |
-| 0 endpoints matched | Check path format in `target-endpoints.yaml` |
-| Interactive Claude session opens | Leave `CLAUDE_MODEL` empty in `.env` |
-| PARSE_FAILED on all endpoints | Set `ANTHROPIC_API_KEY` to use SDK directly |
-| Missing monorepo services | Run `ls workspace/repos/<service>/` and update `repos.yaml` |
-| `Config has no attribute claude_bin` | Add `claude_bin` back to `Config` dataclass in `config.py` |
+| Cannot reach repo | Check VCS token, VCS_BASE_URL, network |
+| claude not found | npm install -g @anthropic-ai/claude-code |
+| PARSE_FAILED on all endpoints | Set ANTHROPIC_API_KEY to bypass Claude Code CLI |
+| 0 endpoints matched | Check path format in target-endpoints.yaml |
+| PR creation 401 | Token needs write access (repo scope for GitHub) |
+| PR skipped | Must run from Phase 1 (--from 1 or fresh run.sh) |
